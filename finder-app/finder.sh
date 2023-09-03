@@ -11,9 +11,9 @@ if [ "$num_of_args" -eq 2 ]
 then
 	if [ -d "$filesdir" ]
 	then
-		matching_lines=$(grep -rlc "$searchstr" "$filesdir")
-		total_files_with_matches=$(grep -rl "$searchstr" "$filesdir")
-		echo "The number of files are $total_files_with_matches and the number of matching lines are $matching_lines"
+		matching_lines=$(grep -rl "$searchstr" "$filesdir" | wc -l)
+		total_files=$(find "$filesdir" -type f | wc -l)
+		echo "The number of files are $total_files and the number of matching lines are $matching_lines"
 		exit 0
 	else
 		echo "Failed: Entered directory $filesdir is invalid"
