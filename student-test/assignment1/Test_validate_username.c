@@ -20,5 +20,9 @@ void test_validate_my_username()
      */
     
     // Added comparison between hard coded username and the username obtained from malloc_username_from_conf_file
-    TEST_ASSERT_TRUE_MESSAGE(!(my_username() == malloc_username_from_conf_file()),"AESD students, please fix me!");
+    
+	const char *hardcoded_username = my_username();
+	char *conf_file_username = malloc_username_from_conf_file();
+	TEST_ASSERT_EQUAL_STRING_MESSAGE(hardcoded_username, conf_file_username, "Usernames don't match");
+	free(conf_file_username);	// Free the malloced pointer
 }
