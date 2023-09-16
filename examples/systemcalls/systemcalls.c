@@ -1,4 +1,5 @@
 #include "systemcalls.h"
+#include <errno.h>
 #include <stdlib.h>
 #include <syslog.h>
 #include <sys/wait.h>
@@ -36,7 +37,7 @@ bool do_system(const char *cmd)
     int status = system(cmd);  // Call system() function for the command 'cmd'
     if (status == ERROR)
     {
-	syslog(LOG_ERR,"Child processor could not be created or the its status could not be retrieved",errno);
+	syslog(LOG_ERR,"Child processor could not be created or the its status could not be retrieved");
         closelog();
 	return false;
     }	
@@ -162,6 +163,10 @@ bool do_exec(int count, ...)
 	    return false;
 	}
     }
+
+    va_end(args);
+    closelog();
+    return(true);
 }
 
 /**
@@ -270,4 +275,8 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
             return false;
         }
     }
+
+    va_end(args);
+    closelog();
+    return true;
 }
