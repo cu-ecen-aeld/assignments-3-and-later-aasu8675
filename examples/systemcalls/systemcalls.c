@@ -5,7 +5,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
-#include <fnctl.h>
+#include <fcntl.h>
 #define ERROR (-1)
 #define SHELL_EXECUTION_FAILURE_CODE (127)
 
