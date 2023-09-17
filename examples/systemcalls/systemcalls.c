@@ -1,3 +1,19 @@
+/**
+ * Compiled on Virtual Box using Makefile
+ * Compiler Flags Used: -Wall & -Werror
+ * @file    systemcalls.c
+ * @brief   Assignment 2 of course ECEN-5713 (AESD)
+ * @author  Aamir Suhail Burhan
+ * @version 1.0
+ * @Submission Date: 17th September 2023
+ *
+ * @description  The systemcalls.c application consists of function which are used the perform various
+ * system calls by using the POSIX functions like system(), fork(), wait().
+ *
+ */
+
+
+/***************************************************HEADER FILES***********************************/
 #include "systemcalls.h"
 #include <errno.h>
 #include <stdlib.h>
@@ -27,14 +43,16 @@ bool do_system(const char *cmd)
  *   or false() if it returned a failure
 */
     openlog("systemcalls", LOG_CONS | LOG_PID, LOG_USER);
-    if (cmd == NULL)
-    {
-	syslog(LOG_ERR,"Command is Null");
-	closelog();
-	return false;
-    }
 
     int status = system(cmd);  // Call system() function for the command 'cmd'
+
+    if ((cmd == NULL) && (status == 0))
+    {
+        syslog(LOG_ERR,"Command is Null, no shell is available");
+        closelog();
+        return false;
+    }
+
     if (status == ERROR)
     {
 	syslog(LOG_ERR,"Child processor could not be created or the its status could not be retrieved");
@@ -48,13 +66,12 @@ bool do_system(const char *cmd)
 	int child_status = WEXITSTATUS(status);  // Check the exit status of the child
 	if (child_status == SHELL_EXECUTION_FAILURE_CODE)
 	{
-            syslog(LOG_ERR,"Shell coudl not be executed in child process");
+            syslog(LOG_ERR,"Shell could not be executed in child process");
 	    closelog();
 	    return false;
 	}
     }
-
-    if (status != 0)
+    else
     {
 	syslog(LOG_ERR,"Command execution failed with status: %d",status);
 	closelog();
