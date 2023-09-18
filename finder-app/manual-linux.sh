@@ -60,9 +60,11 @@ then
 fi
 
 # TODO: Create necessary base directories
-mkdir -p "${OUTDIR}/rootfs/bin" "${OUTDIR}/rootfs/dev" "${OUTDIR}/rootfs/etc" "${OUTDIR}/rootfs/home" "${OUTDIR}/rootfs/lib" "${OUTDIR}/rootfs/lib64" "${OUTDIR}/rootfs/proc" "${OUTDIR}/rootfs/sbin" "${OUTDIR}/rootfs/sys" "${OUTDIR}/rootfs/tmp" "${OUTDIR}/rootfs/usr" "${OUTDIR}/rootfs/var"
-mkdir -p "${OUTDIR}/rootfs/usr/bin" "${OUTDIR}/rootfs/usr/lib" "${OUTDIR}/rootfs/usr/sbin"
-mkdir -p "${OUTDIR}/rootfs/var/log"
+mkdir "${OUTDIR}/rootfs"
+cd "${OUTDIR}/rootfs"
+
+mkdir -p bin dev etc home lib lib64 proc sbin sys tmp usr var
+mkdir -p usr/bin usr/lib usr/sbin var/log
 
 cd "$OUTDIR"
 if [ ! -d "${OUTDIR}/busybox" ]
@@ -86,27 +88,29 @@ ${CROSS_COMPILE}readelf -a "${OUTDIR}/rootfs/bin/busybox" | grep "program interp
 ${CROSS_COMPILE}readelf -a "${OUTDIR}/rootfs/bin/busybox" | grep "Shared library"
 
 # TODO: Add library dependencies to rootfs
-sudo ln -s /home/aamir/AESD/cross-compiler/gcc-arm-10.3-2021.07-x86_64-aarch64-none-linux-gnu/aarch64-none-linux-gnu/libc/lib/ld-linux-aarch64.so.1 ${OUTDIR}/rootfs/lib
-sudo ln -s /home/aamir/AESD/cross-compiler/gcc-arm-10.3-2021.07-x86_64-aarch64-none-linux-gnu/aarch64-none-linux-gnu/libc/lib64/libc.so.6 ${OUTDIR}/rootfs/lib64
-sudo ln -s /home/aamir/AESD/cross-compiler/gcc-arm-10.3-2021.07-x86_64-aarch64-none-linux-gnu/aarch64-none-linux-gnu/libc/lib64/libm.so.6 ${OUTDIR}/rootfs/lib64
-sudo ln -s /home/aamir/AESD/cross-compiler/gcc-arm-10.3-2021.07-x86_64-aarch64-none-linux-gnu/aarch64-none-linux-gnu/libc/lib64/libresolv.so.2 ${OUTDIR}/rootfs/lib64
+cd "${OUTDIR}/rootfs"
+ROOT=$(${CROSS_COMPILE}gcc --print-sysroot)
+sudo cp ${ROOT}/lib/ld-linux-aarch64.so.* ${OUTDIR}/rootfs/lib
+sudo cp ${ROOT}/lib64/libc.so.* ${OUTDIR}/rootfs/lib64
+sudo cp ${ROOT}/lib64/libm.so.* ${OUTDIR}/rootfs/lib64
+sudo cp ${ROOT}/lib64/libresolv.so.* ${OUTDIR}/rootfs/lib64
 
 # TODO: Make device nodes
 sudo mknod -m 666 "${OUTDIR}/rootfs/dev/null" c 1 3  # Null device
 sudo mknod -m 600 "${OUTDIR}/rootfs/dev/console" c 5 1 # Console device
 
 # TODO: Clean and build the writer utility
-cd /home/aamir/AESD/assignments-3-and-later-aasu8675/finder-app
+cd ${FINDER_APP_DIR}
 make clean
 make CROSS_COMPILE=${CROSS_COMPILE}
 
 # TODO: Copy the finder related scripts and executables to the /home directory
 # on the target rootfs
-cp /home/aamir/AESD/assignments-3-and-later-aasu8675/finder-app/writer "${OUTDIR}/rootfs/home"
-cp /home/aamir/AESD/assignments-3-and-later-aasu8675/finder-app/writer.sh "${OUTDIR}/rootfs/home"
-cp /home/aamir/AESD/assignments-3-and-later-aasu8675/conf/username.txt "${OUTDIR}/rootfs/home"
-cp /home/aamir/AESD/assignments-3-and-later-aasu8675/finder-app/finder-test.sh "${OUTDIR}/rootfs/home"
-cp /home/aamir/AESD/assignments-3-and-later-aasu8675/finder-app/autorun-qemu.sh "${OUTDIR}/rootfs/home"
+cp writer "${OUTDIR}/rootfs/home/"
+cp finder.sh "${OUTDIR}/rootfs/home/"
+cp -r conf/ "${OUTDIR}/rootfs/home/"
+cp finder-test.sh "${OUTDIR}/rootfs/home/"
+cp autorun-qemu.sh "${OUTDIR}/rootfs/home/"
 
 # TODO: Chown the root directory
 cd "${OUTDIR}/rootfs"
@@ -114,5 +118,5 @@ sudo chown -R root:root *
 
 # TODO: Create initramfs.cpio.gz
 find . | cpio -H newc -ov --owner root:root > ${OUTDIR}/initramfs.cpio
-cd "${OUTDIR}"
+cd ${OUTDIR}
 gzip -f initramfs.cpio
