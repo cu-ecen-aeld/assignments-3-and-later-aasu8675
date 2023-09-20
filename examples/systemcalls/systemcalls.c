@@ -1,4 +1,30 @@
+/**
+ * Compiled on Virtual Box using Makefile
+ * Compiler Flags Used: -Wall & -Werror
+ * @file    systemcalls.c
+ * @brief   Assignment 2 of course ECEN-5713 (AESD)
+ * @author  Aamir Suhail Burhan
+ * @version 1.0
+ * @Submission Date: 17th September 2023
+ *
+ * @description  The systemcalls.c application consists of function which are used the perform various
+ * system calls by using the POSIX functions like system(), fork(), wait().
+ *
+ */
+
+
+/***************************************************HEADER FILES***********************************/
 #include "systemcalls.h"
+#include <errno.h>
+#include <stdlib.h>
+#include <syslog.h>
+#include <sys/wait.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <fcntl.h>
+#define ERROR (-1)
+#define SHELL_EXECUTION_FAILURE_CODE (127)
 
 /**
  * @param cmd the command to execute with system()
@@ -16,7 +42,43 @@ bool do_system(const char *cmd)
  *   and return a boolean true if the system() call completed with success
  *   or false() if it returned a failure
 */
+    openlog("systemcalls", LOG_CONS | LOG_PID, LOG_USER);
 
+    int status = system(cmd);  // Call system() function for the command 'cmd'
+
+    if ((cmd == NULL) && (status == 0))
+    {
+        syslog(LOG_ERR,"Command is Null, no shell is available");
+        closelog();
+        return false;
+    }
+
+    if (status == ERROR)
+    {
+	syslog(LOG_ERR,"Child processor could not be created or the its status could not be retrieved");
+        closelog();
+	return false;
+    }	
+
+    // Check if the child was terminated normally
+    if (WIFEXITED(status))
+    {
+	int child_status = WEXITSTATUS(status);  // Check the exit status of the child
+	if (child_status == SHELL_EXECUTION_FAILURE_CODE)
+	{
+            syslog(LOG_ERR,"Shell could not be executed in child process");
+	    closelog();
+	    return false;
+	}
+    }
+    else
+    {
+	syslog(LOG_ERR,"Command execution failed with status: %d",status);
+	closelog();
+	return false;
+    }
+
+    closelog();
     return true;
 }
 
@@ -47,7 +109,7 @@ bool do_exec(int count, ...)
     command[count] = NULL;
     // this line is to avoid a compile warning before your implementation is complete
     // and may be removed
-    command[count] = command[count];
+   // command[count] = command[count];
 
 /*
  * TODO:
@@ -58,10 +120,70 @@ bool do_exec(int count, ...)
  *   as second argument to the execv() command.
  *
 */
+    pid_t child_pid = fork();
+
+    openlog("systemcalls", LOG_CONS | LOG_PID, LOG_USER);
+    if (child_pid == ERROR)
+    {
+	syslog(LOG_ERR,"Fork Failed");
+	va_end(args);
+	closelog();
+	return false;
+    }
+
+    if (child_pid == 0)
+    {
+	// Control is in Child Process
+	if (execv(command[0], command) == ERROR)
+	{
+	    syslog(LOG_ERR,"Execv failed");
+            va_end(args);
+	    closelog();
+	    exit(EXIT_FAILURE);
+	}
+    }
+    else
+    {
+	int status;
+
+	if (waitpid(child_pid, &status, 0) == ERROR)
+	{
+	    syslog(LOG_ERR,"waitpid failed");
+            va_end(args);
+	    closelog();
+	    return false;	    
+	}
+
+	// Check if child process exited normally
+	if (WIFEXITED(status))
+	{
+	    int exit_status = WEXITSTATUS(status);
+	    if(exit_status == 0)
+	    {
+		va_end(args);
+		closelog();
+		return true;
+	    }
+	    else
+	    {
+		syslog(LOG_ERR,"Non-zero exit status");
+		va_end(args);
+		closelog();
+		return false;
+	    }
+	}
+	else
+	{
+	    syslog(LOG_ERR,"Child process didnt exit normally");
+	    va_end(args);
+	    closelog();
+	    return false;
+	}
+    }
 
     va_end(args);
-
-    return true;
+    closelog();
+    return(true);
 }
 
 /**
@@ -82,7 +204,7 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
     command[count] = NULL;
     // this line is to avoid a compile warning before your implementation is complete
     // and may be removed
-    command[count] = command[count];
+   // command[count] = command[count];
 
 
 /*
@@ -92,8 +214,86 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
  *   The rest of the behaviour is same as do_exec()
  *
 */
+    pid_t child_pid = fork();
+
+    openlog("systemcalls", LOG_CONS | LOG_PID, LOG_USER);
+    if (child_pid == ERROR)
+    {
+        syslog(LOG_ERR,"Fork Failed");
+        va_end(args);
+        closelog();
+        return false;
+    }
+
+    if (child_pid == 0)
+    {
+	int fd = open(outputfile, O_WRONLY |O_CREAT |O_TRUNC, 0644);
+	if (fd == ERROR)
+	{
+	    syslog(LOG_ERR,"Opening file failed");
+	    va_end(args);
+	    exit(EXIT_FAILURE);
+	}
+
+	if (dup2(fd, STDOUT_FILENO) == ERROR)
+	{
+	    syslog(LOG_ERR, "Redirecting failed");
+	    va_end(args);
+	    close(fd);
+	    exit(EXIT_FAILURE);
+	}
+
+	close(fd);  // Close file descriptor
+
+        // Control is in Child Process
+        if (execv(command[0], command) == ERROR)
+        {
+            syslog(LOG_ERR,"Execv failed");
+            va_end(args);
+            closelog();
+            exit(EXIT_FAILURE);
+        }
+    }
+    else
+    {
+        int status;
+
+        if (waitpid(child_pid, &status, 0) == ERROR)
+        {
+            syslog(LOG_ERR,"waitpid failed");
+            va_end(args);
+            closelog();
+            return false;
+        }
+
+        // Check if child process exited normally
+        if (WIFEXITED(status))
+        {
+            int exit_status = WEXITSTATUS(status);
+            if(exit_status == 0)
+            {
+                va_end(args);
+                closelog();
+                return true;
+            }
+            else
+            {
+                syslog(LOG_ERR,"Non-zero exit status");
+                va_end(args);
+                closelog();
+                return false;
+            }
+        }
+        else
+        {
+            syslog(LOG_ERR,"Child process didnt exit normally");
+            va_end(args);
+            closelog();
+            return false;
+        }
+    }
 
     va_end(args);
-
+    closelog();
     return true;
 }
