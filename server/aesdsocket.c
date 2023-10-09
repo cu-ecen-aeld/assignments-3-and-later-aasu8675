@@ -149,7 +149,7 @@ int main(int argc, char *argv[])
 	if ((argc == 2)  && strcmp(argv[1], "-d") == 0) 
 	{
 		syslog(LOG_INFO,"Running as daemon");
-		daemon_mode();
+		daemon_flag = true;
 	}
 	else
 		syslog(LOG_INFO,"Not running as daemon");
@@ -235,6 +235,10 @@ int main(int argc, char *argv[])
 		}
 
 		freeaddrinfo(servinfo);  // Free addr structure
+
+		// Check if application is run in daemon mode
+		if (daemon_flag == true)
+			daemon_mode();
 
 		if(listen(server_fd, BACKLOG) == ERROR)
 		{

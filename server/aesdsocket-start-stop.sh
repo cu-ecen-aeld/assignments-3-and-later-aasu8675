@@ -2,7 +2,6 @@
 # Author: Aamir Suhail Burhan
 
 if [ $# -ne 1 ]; then
-  echo "Usage: $0 start/stop"
   echo "Please provide exactly 1 argument."
   exit 1
 fi
