@@ -64,7 +64,7 @@ Code: d2800001 d2800000 d503233f d50323bf (b900003f)
 
 Given below is the code snippet of the faulty_write function present in the [Assignment 7 repository](https://github.com/cu-ecen-aeld/assignment-7-aasu8675/blob/master/misc-modules/faulty.c)
 
-'''
+```
 ssize_t faulty_write (struct file *filp, const char __user *buf, size_t count,
 		loff_t *pos)
 {
