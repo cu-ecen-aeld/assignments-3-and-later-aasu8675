@@ -86,7 +86,9 @@ objdump -S /home/aamir/AESD/assignment-7-aasu8675/misc-modules/faulty.ko
 
 The full disassembly of the faulty module can be found in the [faulty-oops-disassembly.txt](./faulty-oops-disassembly.txt)
 
-The error occurs in the faulty_write section, the disassembly is shown below:
+
+
+* The error occurs in the faulty_write section which is of interest while debugging the issue: the disassembly of the faulty write section is shown below:
 
 ```
 Disassembly of section .text:
@@ -116,3 +118,12 @@ ssize_t faulty_write (struct file *filp, const char __user *buf, size_t count,
   1c:	0f 1f 40 00          	nopl   0x0(%rax)
 ```
 
+1. The function gets called and moves to #0x5 which pushes the base pointer
+2. At address 0x6, eax register is cleared by using the xor operation
+3. Address 0x8 tries to move the value 0x0 to an address of 0x0 which causes the null dereferencing
+4. The base pointer is then moved to the stack pointer at address 0x13
+5. At 0x16 the base pointer is popped
+6. At 0x17, a jmpq exists which makes a jump to 0x1c
+7. The nop at 0x1c serves alignment purpose in the pipeline 
+
+Conclusion: The movl instruction performs the dereferencing of null pointer by writing at the address. But the program crashes later at 0x14. As movl takes more cycles to execute, there is no dependency between the next instruction "mov %rsp,%rbp" which might be executing in the pipeline. Hence, the fault probably occurs at a later stage.
