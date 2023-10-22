@@ -12,7 +12,7 @@ Given below is the command used to test the faulty module:
 The output of this command is shown below:
 
 ```
-<span style="color: red;">Unable to handle kernel NULL pointer dereference at virtual address 0000000000000000</span>
+Unable to handle kernel NULL pointer dereference at virtual address 0000000000000000
 Mem abort info:
   ESR = 0x96000045
   EC = 0x25: DABT (current EL), IL = 32 bits
@@ -29,7 +29,7 @@ Modules linked in: hello(O) faulty(O) scull(O)
 CPU: 0 PID: 158 Comm: sh Tainted: G           O      5.15.18 #1
 Hardware name: linux,dummy-virt (DT)
 pstate: 80000005 (Nzcv daif -PAN -UAO -TCO -DIT -SSBS BTYPE=--)
-<span style="color: red;">pc : faulty_write+0x14/0x20 [faulty]</span>
+pc : faulty_write+0x14/0x20 [faulty]
 lr : vfs_write+0xa8/0x2b0
 sp : ffffffc008d23d80
 x29: ffffffc008d23d80 x28: ffffff80020d0000 x27: 0000000000000000
@@ -56,8 +56,25 @@ Code: d2800001 d2800000 d503233f d50323bf (b900003f)
 ---[ end trace 12ffeb2ca24d0303 ]---
 ```
 
+* The first line 'Unable to handle kernel NULL pointer dereference at virtual address 0000000000000000' shows that there is an error in the kernel due to a NULL pointer dereference.
 
+* The line 'pc : faulty_write+0x14/0x20 [faulty]' shows the program counter status when the kernel error occurs. The module faulty was being executed at the time of the crash, which consists of a function called "faulty_write". 
 
+## faulty_write Code Analysis
+
+Given below is the code snippet of the faulty_write function present in the [Assignment 7 repository](https://github.com/cu-ecen-aeld/assignment-7-aasu8675/blob/master/misc-modules/faulty.c)
+
+'''
+ssize_t faulty_write (struct file *filp, const char __user *buf, size_t count,
+		loff_t *pos)
+{
+	/* make a simple fault by dereferencing a NULL pointer */
+	*(int *)0 = 0;
+	return 0;
+}
+```
+
+* The faulty_write function dereferences a NULL pointer which causes the kernel error.
 
 
 
