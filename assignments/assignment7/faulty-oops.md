@@ -76,18 +76,43 @@ ssize_t faulty_write (struct file *filp, const char __user *buf, size_t count,
 
 * The faulty_write function dereferences a NULL pointer which causes the kernel error.
 
+## Cross-referencing with cross compiled objdump
 
+By using the following command from the path "assignment-5-aasu8675/buildroot/output/host/bin" we can observe the disaessembly:
 
+```
+objdump -S /home/aamir/AESD/assignment-7-aasu8675/misc-modules/faulty.ko
+```
 
+The full disassembly of the faulty module can be found in the [faulty-oops-disassembly.txt](./faulty-oops-disassembly.txt)
 
+The error occurs in the faulty_write section, the disassembly is shown below:
 
+```
+Disassembly of section .text:
 
+0000000000000000 <faulty_write>:
+	return ret;
+}
 
-
-
-
-
-
-
-
+ssize_t faulty_write (struct file *filp, const char __user *buf, size_t count,
+		loff_t *pos)
+{
+   0:	e8 00 00 00 00       	callq  5 <faulty_write+0x5>
+   5:	55                   	push   %rbp
+	/* make a simple fault by dereferencing a NULL pointer */
+	*(int *)0 = 0;
+	return 0;
+}
+   6:	31 c0                	xor    %eax,%eax
+	*(int *)0 = 0;
+   8:	c7 04 25 00 00 00 00 	movl   $0x0,0x0
+   f:	00 00 00 00 
+{
+  13:	48 89 e5             	mov    %rsp,%rbp
+}
+  16:	5d                   	pop    %rbp
+  17:	e9 00 00 00 00       	jmpq   1c <faulty_write+0x1c>
+  1c:	0f 1f 40 00          	nopl   0x0(%rax)
+```
 

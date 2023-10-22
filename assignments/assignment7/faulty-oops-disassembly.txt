@@ -1,0 +1,161 @@
+Disassembly of section .text:
+
+0000000000000000 <faulty_write>:
+	return ret;
+}
+
+ssize_t faulty_write (struct file *filp, const char __user *buf, size_t count,
+		loff_t *pos)
+{
+   0:	e8 00 00 00 00       	callq  5 <faulty_write+0x5>
+   5:	55                   	push   %rbp
+	/* make a simple fault by dereferencing a NULL pointer */
+	*(int *)0 = 0;
+	return 0;
+}
+   6:	31 c0                	xor    %eax,%eax
+	*(int *)0 = 0;
+   8:	c7 04 25 00 00 00 00 	movl   $0x0,0x0
+   f:	00 00 00 00 
+{
+  13:	48 89 e5             	mov    %rsp,%rbp
+}
+  16:	5d                   	pop    %rbp
+  17:	e9 00 00 00 00       	jmpq   1c <faulty_write+0x1c>
+  1c:	0f 1f 40 00          	nopl   0x0(%rax)
+
+0000000000000020 <faulty_read>:
+{
+  20:	e8 00 00 00 00       	callq  25 <faulty_read+0x5>
+  25:	55                   	push   %rbp
+  26:	48 89 e5             	mov    %rsp,%rbp
+  29:	41 54                	push   %r12
+  2b:	49 89 f4             	mov    %rsi,%r12
+  2e:	53                   	push   %rbx
+  2f:	48 8d 4d f8          	lea    -0x8(%rbp),%rcx
+  33:	48 83 ec 10          	sub    $0x10,%rsp
+  37:	65 48 8b 04 25 28 00 	mov    %gs:0x28,%rax
+  3e:	00 00 
+  40:	48 89 45 e8          	mov    %rax,-0x18(%rbp)
+  44:	31 c0                	xor    %eax,%eax
+	for (i = 0; i < 20; i++)
+  46:	48 8d 45 e4          	lea    -0x1c(%rbp),%rax
+		*(stack_buf + i) = 0xff;
+  4a:	c6 00 ff             	movb   $0xff,(%rax)
+	for (i = 0; i < 20; i++)
+  4d:	48 83 c0 01          	add    $0x1,%rax
+  51:	48 39 c1             	cmp    %rax,%rcx
+  54:	75 f4                	jne    4a <faulty_read+0x2a>
+	if (count > 4)
+  56:	48 83 fa 04          	cmp    $0x4,%rdx
+  5a:	bb 04 00 00 00       	mov    $0x4,%ebx
+
+static __always_inline void check_object_size(const void *ptr, unsigned long n,
+					      bool to_user)
+{
+	if (!__builtin_constant_p(n))
+		__check_object_size(ptr, n, to_user);
+  5f:	48 8d 7d e4          	lea    -0x1c(%rbp),%rdi
+  63:	48 0f 46 da          	cmovbe %rdx,%rbx
+  67:	ba 01 00 00 00       	mov    $0x1,%edx
+  6c:	48 89 de             	mov    %rbx,%rsi
+  6f:	e8 00 00 00 00       	callq  74 <faulty_read+0x54>
+
+static __always_inline unsigned long __must_check
+copy_to_user(void __user *to, const void *from, unsigned long n)
+{
+	if (likely(check_copy_size(from, n, true)))
+		n = _copy_to_user(to, from, n);
+  74:	48 89 da             	mov    %rbx,%rdx
+  77:	4c 89 e7             	mov    %r12,%rdi
+  7a:	48 8d 75 e4          	lea    -0x1c(%rbp),%rsi
+  7e:	e8 00 00 00 00       	callq  83 <faulty_read+0x63>
+		return count;
+  83:	85 c0                	test   %eax,%eax
+  85:	48 63 d0             	movslq %eax,%rdx
+  88:	48 89 d8             	mov    %rbx,%rax
+  8b:	48 0f 45 c2          	cmovne %rdx,%rax
+}
+  8f:	48 8b 7d e8          	mov    -0x18(%rbp),%rdi
+  93:	65 48 33 3c 25 28 00 	xor    %gs:0x28,%rdi
+  9a:	00 00 
+  9c:	75 0d                	jne    ab <faulty_read+0x8b>
+  9e:	48 83 c4 10          	add    $0x10,%rsp
+  a2:	5b                   	pop    %rbx
+  a3:	41 5c                	pop    %r12
+  a5:	5d                   	pop    %rbp
+  a6:	e9 00 00 00 00       	jmpq   ab <faulty_read+0x8b>
+  ab:	e8 00 00 00 00       	callq  b0 <faulty_init>
+
+00000000000000b0 <faulty_init>:
+	.owner = THIS_MODULE
+};
+
+
+int faulty_init(void)
+{
+  b0:	e8 00 00 00 00       	callq  b5 <faulty_init+0x5>
+  b5:	55                   	push   %rbp
+extern void chrdev_show(struct seq_file *,off_t);
+
+static inline int register_chrdev(unsigned int major, const char *name,
+				  const struct file_operations *fops)
+{
+	return __register_chrdev(major, 0, 256, name, fops);
+  b6:	8b 3d 00 00 00 00    	mov    0x0(%rip),%edi        # bc <faulty_init+0xc>
+  bc:	31 f6                	xor    %esi,%esi
+  be:	49 c7 c0 00 00 00 00 	mov    $0x0,%r8
+  c5:	48 c7 c1 00 00 00 00 	mov    $0x0,%rcx
+  cc:	ba 00 01 00 00       	mov    $0x100,%edx
+  d1:	48 89 e5             	mov    %rsp,%rbp
+  d4:	e8 00 00 00 00       	callq  d9 <faulty_init+0x29>
+
+	/*
+	 * Register your major, and accept a dynamic number
+	 */
+	result = register_chrdev(faulty_major, "faulty", &faulty_fops);
+	if (result < 0)
+  d9:	85 c0                	test   %eax,%eax
+  db:	78 12                	js     ef <faulty_init+0x3f>
+		return result;
+	if (faulty_major == 0)
+  dd:	8b 15 00 00 00 00    	mov    0x0(%rip),%edx        # e3 <faulty_init+0x33>
+  e3:	85 d2                	test   %edx,%edx
+  e5:	75 0e                	jne    f5 <faulty_init+0x45>
+		faulty_major = result; /* dynamic */
+  e7:	89 05 00 00 00 00    	mov    %eax,0x0(%rip)        # ed <faulty_init+0x3d>
+
+	return 0;
+  ed:	31 c0                	xor    %eax,%eax
+}
+  ef:	5d                   	pop    %rbp
+  f0:	e9 00 00 00 00       	jmpq   f5 <faulty_init+0x45>
+	return 0;
+  f5:	31 c0                	xor    %eax,%eax
+}
+  f7:	5d                   	pop    %rbp
+  f8:	e9 00 00 00 00       	jmpq   fd <faulty_init+0x4d>
+  fd:	0f 1f 00             	nopl   (%rax)
+
+0000000000000100 <cleanup_module>:
+
+void faulty_cleanup(void)
+{
+ 100:	e8 00 00 00 00       	callq  105 <cleanup_module+0x5>
+ 105:	55                   	push   %rbp
+}
+
+static inline void unregister_chrdev(unsigned int major, const char *name)
+{
+	__unregister_chrdev(major, 0, 256, name);
+ 106:	8b 3d 00 00 00 00    	mov    0x0(%rip),%edi        # 10c <cleanup_module+0xc>
+ 10c:	48 c7 c1 00 00 00 00 	mov    $0x0,%rcx
+ 113:	31 f6                	xor    %esi,%esi
+ 115:	ba 00 01 00 00       	mov    $0x100,%edx
+ 11a:	48 89 e5             	mov    %rsp,%rbp
+ 11d:	e8 00 00 00 00       	callq  122 <cleanup_module+0x22>
+	unregister_chrdev(faulty_major, "faulty");
+}
+ 122:	5d                   	pop    %rbp
+ 123:	e9 00 00 00 00       	jmpq   128 <cleanup_module+0x28>
+
