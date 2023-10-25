@@ -36,6 +36,7 @@
 #include <stdbool.h>
 #include <pthread.h>
 #include <time.h>
+#include <sys/stat.h>
 #include "queue.h"
 
 /*****************************************DEFINES***********************************/
@@ -48,8 +49,9 @@
 #define TIME_STAMP_INTERVAL_IN_SECS (10)
 int server_fd, client_fd;  // File descriptors for server and client
 int file_fd;  // Files descriptor for the data file
-bool error_flag = false, daemon_flag = false;
-
+// bool error_flag = false, 
+bool daemon_flag = false;
+volatile sig_atomic_t exit_flag = 0;
 
 /******************Structure defintion of linked list based thread******************/
 typedef struct client_node 
@@ -66,25 +68,24 @@ typedef struct client_node
 typedef struct timestamp
 {
 	pthread_t thread_id;
-	bool thread_completion_status;
 	pthread_mutex_t *thread_mutex;
 } timestamp_t;
+
+
+timestamp_t *time_node = NULL;
+
 
 /* Description: This function closes all file descriptors and deletes the created 
  * file.
  */
 void cleanup(void)
 {
+	syslog(LOG_DEBUG, "Cleanup start");
+
 	if(close(server_fd) == ERROR)
 	{
 		perror("Server fd");
 		syslog(LOG_ERR,"Server fd close");
-	}
-
-	if(close(client_fd) == ERROR)
-	{
-		perror("Client fd");
-		syslog(LOG_ERR, "Client fd close");
 	}
 
 	// Error handling for closing fd
@@ -92,7 +93,6 @@ void cleanup(void)
 	{
 		perror("File close");
 		syslog(LOG_ERR, "Error in closing file");
-		error_flag = true;
 	}
 
 	// Error handling for deleting file
@@ -101,6 +101,8 @@ void cleanup(void)
 		perror("File removal");
 		syslog(LOG_ERR, " File removal failed");
 	}
+
+	syslog(LOG_DEBUG, "Cleanup End");
 	closelog();
 }
 
@@ -108,14 +110,14 @@ void cleanup(void)
 /* Description: This function provides support to run this application
  * as a daemon
  */
-void daemon_mode(void)
+int daemon_mode(void)
 {
 	pid_t process_id = fork();  // Forking the parent
 	if (process_id == ERROR)
 	{
 		perror("Fork failed");
 		syslog(LOG_ERR, "Fork failed");
-		exit(1);
+		return ERROR;
 	}
 
 	// Valid process id
@@ -125,20 +127,64 @@ void daemon_mode(void)
 		exit(0);
 	}
 
+	umask(0);  // Unmask the file mode
+
 	// Start a new session
 	if(setsid() == ERROR)
 	{
 		perror("setsid");
 		syslog(LOG_ERR, "Error in creating daemon session");
-		exit(1);
+		return ERROR;
 	}
 
-	chdir("/");  // Change directory to rootf
+	// Change directory to root
+	if(chdir("/") == ERROR)
+	{
+		perror("Chdir failure");
+		syslog(LOG_ERR, "chdir failed");
+		return ERROR;
+	}
 
 	// Close standard file descriptors
 	close(STDIN_FILENO);
 	close(STDOUT_FILENO);
 	close(STDERR_FILENO);
+
+	// Redirecting output to standard files
+	int fd = open("/dev/null", O_RDWR);
+	if (fd == ERROR)
+	{
+		syslog(LOG_ERR, "Redirecting open");
+		perror("Redirecting open");
+		return ERROR;
+	} 
+
+	if (dup2(fd, STDIN_FILENO) == ERROR)
+	{
+		syslog(LOG_ERR, "Redirecting stdin");
+		perror("Redirecting stdin");
+		return ERROR;
+	}
+
+
+	if (dup2(fd, STDOUT_FILENO) == ERROR)
+	{
+		syslog(LOG_ERR, "Redirecting stdout");
+		perror("Redirecting stdout");
+		return ERROR;
+	}
+
+
+	if (dup2(fd, STDERR_FILENO) == ERROR)
+	{
+		syslog(LOG_ERR, "Redirecting stderr");
+		perror("Redirecting stderr");
+		return ERROR;
+	}
+
+	close(fd);
+
+	return 0;
 }
 
 
@@ -147,12 +193,20 @@ void daemon_mode(void)
  */
 void signal_handler(int signo)
 {
+	syslog(LOG_DEBUG, "Entered signal handler");
 	if (signo == SIGINT || signo == SIGTERM)
 	{
 		syslog(LOG_INFO,"Caught signal,exiting");
-		cleanup();  // Perform cleanup
-		exit(EXIT_SUCCESS);
+
+		exit_flag = 1;
+
+		shutdown(server_fd, SHUT_RDWR);
+
+		close(server_fd);
+
+		pthread_cancel(time_node -> thread_id);
 	}
+	syslog(LOG_DEBUG, "Exiting signal handler");
 }
 
 
@@ -171,28 +225,22 @@ void *get_in_addr(struct sockaddr *sa)
 void  *timestamp_appender(void *thread_node) 
 {
 	timestamp_t* timestamp_data = (timestamp_t*)thread_node;
-	timestamp_data -> thread_completion_status = false;
 	int ret;
-	bool timestamp_error_status = false;
 
 	struct timespec ts;
 	struct tm *local_time_info;
 	time_t current_time;
 	char timestamp[MAX_BUFFER_SIZE];
 
-	while (1) 
+	while(1)
 	{
-		if(error_flag == true)
-			break;
-
 		ret = clock_gettime(CLOCK_MONOTONIC, &ts);
 
 		if(ret == ERROR)
 		{
 			perror("Clock gettime");
 			syslog(LOG_ERR, "Clock gettime");
-			timestamp_error_status = true;
-			break;
+			return NULL;
 		}
 
 		ts.tv_sec += TIME_STAMP_INTERVAL_IN_SECS;  // Adding 10 seconds interval
@@ -203,8 +251,7 @@ void  *timestamp_appender(void *thread_node)
 		{
 			perror("Clock nanosleep");
 			syslog(LOG_ERR, "Clock nanosleep");
-			timestamp_error_status = true;
-			break;
+			return NULL;
 		}
 
 		time(&current_time);
@@ -217,34 +264,25 @@ void  *timestamp_appender(void *thread_node)
 		{
 			perror("Mutex Lock");
 			syslog(LOG_ERR, "Mutex Lock");
-			timestamp_error_status = true;
-			break;
+			return NULL;
 		}
 
 		if(write(file_fd, timestamp, strlen(timestamp)) == ERROR)
 		{
 			perror("Timestamp file write");
 			syslog(LOG_ERR, "Timestamp file write");
-			timestamp_error_status = true;
-			break;
+			return NULL;
 		}
 
 		if(pthread_mutex_unlock(timestamp_data -> thread_mutex) != SUCCESS)
 		{
 			perror("Mutex Unlock");
 			syslog(LOG_ERR, "Mutex Unlock");
-			timestamp_error_status = true;
-			break;
+			return NULL;
 		}
 
 	}
-
-	if(timestamp_error_status == false)
-		timestamp_data -> thread_completion_status = true;
-
-	return thread_node;
 }
-
 
 /* Description: This function handles the client connections in a thread
 */
@@ -259,110 +297,90 @@ void *client_handler(void *client_thread)
 
 	char buf[MAX_BUFFER_SIZE];
 	int bytes_received = 0;
-	bool handler_error_status = false;
 
 	client_node_t *node = (client_node_t*) client_thread;
 	node -> thread_completion_status = false;
 
 	memset(buf, '\0', MAX_BUFFER_SIZE); // Clear the buffer
 
-	while (1)
+	while(1)
 	{
-		// Loop to receive data from the client
-		while (1) 
+		bytes_received = recv(node -> connection_fd, buf, MAX_BUFFER_SIZE, 0);
+
+		if (bytes_received == ERROR) 
 		{
-			bytes_received = recv(node -> connection_fd, buf, MAX_BUFFER_SIZE - 1, 0);
-
-			if (bytes_received == ERROR) 
-			{
-				perror("recv from handler");
-				syslog(LOG_ERR, "Receiving from client failed");
-				handler_error_status = true;
-				break;
-			}
-
-			// Lock the mutex before writing to the file
-			if(pthread_mutex_lock(node -> thread_mutex) != SUCCESS)
-			{
-				perror("Mutex lock failure");
-				syslog(LOG_ERR, "Mutex lock failure");
-				handler_error_status = true;
-				break;
-			}
-
-			if (write(file_fd, buf, bytes_received) == ERROR) 
-			{
-				perror("File write error");
-				syslog(LOG_ERR, "File write error");
-				handler_error_status = true;
-				break;
-			}
-
-			// Unlock the mutex after writing to the file
-			if(pthread_mutex_unlock(node -> thread_mutex) != SUCCESS)
-			{
-				perror("Mutex unlock failure");
-				syslog(LOG_ERR, "Mutex unlock failure");
-				handler_error_status = true;
-				break;
-			}
-
-			// Check if packet end has reached
-			if (buf[bytes_received - 1] == '\n')
-				break;
+			perror("recv from handler");
+			syslog(LOG_ERR, "Receiving from client failed");
+			return NULL;
 		}
 
-		if(handler_error_status == true)
-			break;
-
-		// Read from the file and send it to the client
-		int sent_bytes = 0;
-		memset(buf, '\0', MAX_BUFFER_SIZE); // Clear the buffer
-
-		if(lseek(file_fd , 0, SEEK_SET) == ERROR)
+		// Lock the mutex before writing to the file
+		if(pthread_mutex_lock(node -> thread_mutex) != SUCCESS)
 		{
-			perror("lseek");
-			syslog(LOG_ERR, "lseek failed");
-			handler_error_status = true;
-			break;
+			perror("Mutex lock failure");
+			syslog(LOG_ERR, "Mutex lock failure");
+			return NULL;
 		}
 
-		while(1)
+		if (write(file_fd, buf, bytes_received) == ERROR) 
 		{
-			int bytes_read = read(file_fd, buf, MAX_BUFFER_SIZE);
-
-			if(bytes_read == ERROR)
-			{
-				perror("File read");
-				syslog(LOG_ERR, "Failed to read file");
-				handler_error_status = true;
-				break;
-			}
-
-			sent_bytes = send(node -> connection_fd, buf, bytes_read, 0);
-
-			if(sent_bytes == ERROR)
-			{
-				perror("Send to client failed");
-				syslog(LOG_ERR, " Send to client failed");
-				handler_error_status = true;
-				break;
-			}
-
-			// Check for end of packet
-			if(buf[sent_bytes-1] == '\n')
-				break;
+			perror("File write error");
+			syslog(LOG_ERR, "File write error");
+			return NULL;
 		}
 
-		if(handler_error_status == true)
+		// Unlock the mutex after writing to the file
+		if(pthread_mutex_unlock(node -> thread_mutex) != SUCCESS)
+		{
+			perror("Mutex unlock failure");
+			syslog(LOG_ERR, "Mutex unlock failure");
+			return NULL;
+		}
+
+		// Check if packet end has reached
+		if ((memchr(buf, '\n', bytes_received)) != NULL)
 			break;
 	}
 
-	//	close(file_fd);
-	close(node -> connection_fd);
+	// Read from the file and send it to the client
+	int sent_bytes = 0;
+	memset(buf, '\0', MAX_BUFFER_SIZE); // Clear the buffer
 
-	if(handler_error_status == false)
-		node -> thread_completion_status = true;
+	if(lseek(file_fd , 0, SEEK_SET) == ERROR)
+	{
+		perror("lseek");
+		syslog(LOG_ERR, "lseek failed");
+		return NULL;
+	}
+
+	while(1)
+	{
+		int bytes_read = read(file_fd, buf, MAX_BUFFER_SIZE);
+
+		if(bytes_read == ERROR)
+		{
+			perror("File read");
+			syslog(LOG_ERR, "Failed to read file");
+			return NULL;
+		}
+
+		sent_bytes = send(node -> connection_fd, buf, bytes_read, 0);
+
+		if(sent_bytes == ERROR)
+		{
+			perror("Send to client failed");
+			syslog(LOG_ERR, " Send to client failed");
+			return NULL;
+		}
+
+		// If there are no more bytes to read, exit the while loop
+		if(bytes_read == 0)
+			break;
+
+	}
+
+	close(node -> connection_fd);
+	node -> thread_completion_status = true;
 
 	return client_thread;
 }
@@ -385,7 +403,6 @@ int main(int argc, char *argv[])
 	signal(SIGINT, signal_handler);  // Setup signals handlers
 	signal(SIGTERM, signal_handler);
 
-
 	// Struct for sockets
 	struct addrinfo hints, *servinfo;
 	struct sockaddr_storage their_addr; // connector's/clients address information
@@ -393,9 +410,6 @@ int main(int argc, char *argv[])
 	pthread_mutex_t thread_mutex;
 
 	client_node_t *data_node_ptr = NULL;
-	client_node_t *temp = NULL;
-
-	timestamp_t *time_node = NULL;
 
 	if(pthread_mutex_init(&thread_mutex, NULL) != SUCCESS) 
 	{
@@ -423,184 +437,191 @@ int main(int argc, char *argv[])
 	{
 		perror("File open");
 		syslog(LOG_ERR, "File Open");
-		error_flag = true;
+		return ERROR;
 	} 
 
 
-	while(1)
+	// Get socket address information
+	int status = getaddrinfo(NULL, PORT, &hints, &servinfo);
+
+	if (status != 0)	
 	{
-		// Get socket address information
-		int status = getaddrinfo(NULL, PORT, &hints, &servinfo);
-
-		if (status != 0)	
-		{
-			fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(status));
-			syslog(LOG_ERR,"getaddrinfo failed");
-			error_flag = true;
-			if(servinfo != NULL)
-				freeaddrinfo(servinfo);
-			break;
-		}
-
-		if(servinfo == NULL)
-		{
-			perror("Malloc for getaddrinfo failed");
-			syslog(LOG_ERR, " Malloc for getaddrinfo failed");
-			error_flag = true;
-			break;
-		}
-
-		// Create endpoint for communication using socket for server
-		server_fd = socket(servinfo->ai_family, servinfo->ai_socktype, servinfo->ai_protocol);
-
-		if(server_fd == ERROR)
-		{
-			syslog(LOG_ERR, "listen failed");
-			error_flag = true;
-			break;
-		}
-
-		if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int)) == ERROR)
-		{
-			perror("setsockopt failure");
-			syslog(LOG_ERR, "setsockopt failed");
-			error_flag = true;
-			break;
-		}
-
-		// Binding address to server socket
-		if (bind(server_fd, servinfo->ai_addr, servinfo->ai_addrlen) == ERROR)
-		{
-			perror("server:bind");
-			syslog(LOG_ERR, "Binding failure at server");
-			error_flag = true;
-			if(servinfo != NULL)
-				freeaddrinfo(servinfo);
-			break;
-		}
-
-		freeaddrinfo(servinfo);  // Free addr structure
-
-		// Check if application is run in daemon mode
-		if (daemon_flag == true)
-			daemon_mode();
-
-		if(listen(server_fd, BACKLOG) == ERROR)
-		{
-			perror("listen");
-			syslog(LOG_ERR, "listen failed");
-			error_flag = true;
-			break;
-		}
-
-		// Malloc for timer thread
-		time_node = (timestamp_t*)malloc(sizeof(timestamp_t));
-
-		if(time_node == NULL)
-		{
-			perror("Malloc fail on timestamp thread");
-			syslog(LOG_ERR, "Malloc fail on timestamp thread");
-			error_flag = true;
-			break;
-		}
-
-		time_node -> thread_completion_status = false;
-		time_node -> thread_mutex = &thread_mutex;
-
-		if(pthread_create(&time_node -> thread_id, NULL, timestamp_appender, time_node) != SUCCESS)
-		{
-			perror("pthread_create() for timer thread");
-			syslog(LOG_ERR, "pthread_create() for timer thread");
-			error_flag = true;
-			free(time_node);
-			time_node = NULL;
-			break;
-		} 
-
-
-		while(1)
-		{
-			// Accept client connections
-			client_fd = accept(server_fd, (struct sockaddr *)&their_addr, &sin_size);
-
-			if(client_fd == ERROR)
-			{
-				perror("accept");
-				syslog(LOG_ERR,"Accept request failed");
-				error_flag = true;
-				break;
-			}
-
-			inet_ntop(their_addr.ss_family,get_in_addr((struct sockaddr *)&their_addr),
-					s, sizeof s);
-
-			data_node_ptr = (client_node_t *)malloc(sizeof(client_node_t));
-
-			if(data_node_ptr == NULL)
-			{
-				perror("Malloc for client thread");
-				syslog(LOG_ERR, "Malloc for client thread");
-				error_flag = true;
-				break;
-			}
-
-			data_node_ptr -> connection_fd = client_fd;
-			data_node_ptr -> thread_mutex = &thread_mutex;
-			data_node_ptr -> thread_completion_status = false;
-
-			if(pthread_create(&(data_node_ptr -> thread_id), NULL, client_handler, data_node_ptr) != SUCCESS)
-			{
-				perror("pthread_create() for Client connection thread");
-				syslog(LOG_ERR, "pthread_create() for Client connection thread");
-				error_flag = true;
-				free(data_node_ptr);
-				data_node_ptr = NULL;
-				break;
-			}
-
-			SLIST_INSERT_HEAD(&head, data_node_ptr, next_node);
-
-			SLIST_FOREACH_SAFE(data_node_ptr, &head, next_node, temp)
-			{
-				if(data_node_ptr -> thread_completion_status == true)
-				{
-					syslog(LOG_INFO,"Joining client thread");
-					pthread_join(data_node_ptr -> thread_id, NULL);
-					SLIST_REMOVE(&head, data_node_ptr, client_node, next_node);
-					free(data_node_ptr);
-					data_node_ptr = NULL;
-				}
-			}
-
-			if(error_flag == true)
-				break;
-		}
-
-
-		if(error_flag == true)
-			break;
+		fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(status));
+		syslog(LOG_ERR,"getaddrinfo failed");
+		if(servinfo != NULL)
+			freeaddrinfo(servinfo);
+		return ERROR;
 	}
 
-	cleanup();
-	pthread_mutex_destroy(&thread_mutex);
+	if(servinfo == NULL)
+	{
+		perror("Malloc for getaddrinfo failed");
+		syslog(LOG_ERR, " Malloc for getaddrinfo failed");
+		return ERROR;
+	}
+
+	// Create endpoint for communication using socket for server
+	server_fd = socket(servinfo->ai_family, servinfo->ai_socktype, servinfo->ai_protocol);
+
+	if(server_fd == ERROR)
+	{
+		syslog(LOG_ERR, "listen failed");
+		return ERROR;
+	}
+
+	if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int)) == ERROR)
+	{
+		perror("setsockopt failure");
+		syslog(LOG_ERR, "setsockopt failed");
+		return ERROR;
+	}
+
+	// Binding address to server socket
+	if (bind(server_fd, servinfo->ai_addr, servinfo->ai_addrlen) == ERROR)
+	{
+		perror("server:bind");
+		syslog(LOG_ERR, "Binding failure at server");
+		if(servinfo != NULL)
+			freeaddrinfo(servinfo);
+		return ERROR;
+	}
+
+	freeaddrinfo(servinfo);  // Free addr structure
+
+	int daemon_status = 0;
+
+	// Check if application is run in daemon mode
+	if (daemon_flag == true)
+		daemon_status = daemon_mode();
+
+	// Check if daemon mode caused any failure
+	if (daemon_status == ERROR)
+	{
+		return ERROR;
+	}
+
+	if(listen(server_fd, BACKLOG) == ERROR)
+	{
+		perror("listen");
+		syslog(LOG_ERR, "listen failed");
+		return ERROR;
+	}
+
+	syslog(LOG_DEBUG, "Listening for connections");
+
+	// Malloc for timer thread
+	time_node = (timestamp_t*)malloc(sizeof(timestamp_t));
+
+	if(time_node == NULL)
+	{
+		perror("Malloc fail on timestamp thread");
+		syslog(LOG_ERR, "Malloc fail on timestamp thread");
+		return ERROR;
+	}
+
+
+	time_node -> thread_mutex = &thread_mutex;
+
+	if(pthread_create(&time_node -> thread_id, NULL, timestamp_appender, time_node) != SUCCESS)
+	{
+		perror("pthread_create() for timer thread");
+		syslog(LOG_ERR, "pthread_create() for timer thread");
+		free(time_node);
+		time_node = NULL;
+		return ERROR;
+	} 
+
+	while(!exit_flag)
+	{
+		// Accept client connections
+		client_fd = accept(server_fd, (struct sockaddr *)&their_addr, &sin_size);
+
+		if(client_fd == ERROR)
+		{
+			perror("accept");
+			syslog(LOG_ERR,"Accept request failed");
+			if(exit_flag == 0)
+				return ERROR;
+			else
+				break;
+		}
+
+		syslog(LOG_DEBUG, "Connection accepted");
+
+		inet_ntop(their_addr.ss_family,get_in_addr((struct sockaddr *)&their_addr),
+				s, sizeof s);
+
+		data_node_ptr = (client_node_t *)malloc(sizeof(client_node_t));
+
+		if(data_node_ptr == NULL)
+		{
+			perror("Malloc for client thread");
+			syslog(LOG_ERR, "Malloc for client thread");
+			return ERROR;
+		}
+
+		data_node_ptr -> connection_fd = client_fd;
+		data_node_ptr -> thread_mutex = &thread_mutex;
+		data_node_ptr -> thread_completion_status = false;
+
+		if(pthread_create(&(data_node_ptr -> thread_id), NULL, client_handler, data_node_ptr) != SUCCESS)
+		{
+			perror("pthread_create() for Client connection thread");
+			syslog(LOG_ERR, "pthread_create() for Client connection thread");
+			free(data_node_ptr);
+			data_node_ptr = NULL;
+			return ERROR;
+		}
+
+		// Insert the node into linked-list
+		SLIST_INSERT_HEAD(&head, data_node_ptr, next_node);
+		data_node_ptr = NULL;
+
+		// check for thread completion
+		SLIST_FOREACH(data_node_ptr, &head, next_node)
+		{
+			if(data_node_ptr -> thread_completion_status == true)
+			{
+				int status;
+				status = pthread_join(data_node_ptr-> thread_id, NULL);
+				if(status == ERROR)
+				{
+					syslog(LOG_ERR, "Thread join failed");
+					return ERROR;
+				}
+
+				syslog(LOG_INFO, "Thread join %ld",data_node_ptr -> thread_id);
+			}
+		}
+
+	}
+
+	syslog(LOG_DEBUG, "Finished while loop");
 
 	// Emptying the Linked-list
-	while(!SLIST_EMPTY(&head))
+	while (!SLIST_EMPTY(&head))
 	{
 		data_node_ptr = SLIST_FIRST(&head);
-		SLIST_REMOVE_HEAD(&head, next_node);
-		pthread_join(data_node_ptr -> thread_id, NULL);  // For timer thread
+		SLIST_REMOVE(&head, data_node_ptr, client_node, next_node);
 		free(data_node_ptr);
 		data_node_ptr = NULL;
 	}
 
+	syslog(LOG_DEBUG, "Finished emptying linked list for client handling threads");
+
 	pthread_join(time_node -> thread_id, NULL);  // Timer thread
+
+	syslog(LOG_DEBUG, "Joined timer thread");
+
 	free(time_node);
 	time_node = NULL;
 
-	if(error_flag == true)
-		return 1;
-	else
-		return 0;
+	pthread_mutex_destroy(&thread_mutex);
+
+	syslog(LOG_DEBUG, "Before cleanup in main");
+	cleanup();
+	syslog(LOG_DEBUG, "After cleanup in main");
+
+	return 0;
 }
 
