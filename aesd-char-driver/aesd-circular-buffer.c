@@ -80,12 +80,12 @@ void aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer, const s
 	buffer->entry[buffer->in_offs].buffptr = add_entry->buffptr;
     	buffer->entry[buffer->in_offs].size = add_entry->size;
 
+	// Increment the in_offs for new entry and perform % for overflow check
+        buffer->in_offs = (buffer->in_offs + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+
 	// If buffer is full, update the out_offset to overwrite the oldest entry
         if (buffer->full)
                 buffer->out_offs = (buffer->out_offs + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
-
-	// Increment the in_offs for new entry and perform % for overflow check
-        buffer->in_offs = (buffer->in_offs + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
 
 	// If the offsets are equal, update the buffer full status 
 	if (buffer->in_offs == buffer->out_offs) 
