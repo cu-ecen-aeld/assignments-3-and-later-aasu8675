@@ -45,8 +45,20 @@
 #define SUCCESS (0)
 #define BACKLOG (10)  // Number of pending connection queue will hold
 #define MAX_BUFFER_SIZE 1024
-#define DATA_FILE_PATH "/var/tmp/aesdsocketdata"
 #define TIME_STAMP_INTERVAL_IN_SECS (10)
+
+#define USE_AESD_CHAR_DEVICE // Build switch to use character device
+
+// Using buildswitch for character device driver
+#ifdef USE_AESD_CHAR_DEVICE
+	#define DATA_PATH "/dev/aesdchar"
+#else
+	#define DATA_PATH "/var/tmp/aesdsocketdata"
+#endif
+
+
+
+
 int server_fd, client_fd;  // File descriptors for server and client
 int file_fd;  // Files descriptor for the data file
 // bool error_flag = false, 
@@ -63,7 +75,7 @@ typedef struct client_node
 	SLIST_ENTRY(client_node) next_node;  // Pointer to next elemenet
 } client_node_t;
 
-
+#ifndef USE_AESD_CHAR_DEVICE
 // Struct for timestamp thread
 typedef struct timestamp
 {
@@ -73,6 +85,7 @@ typedef struct timestamp
 
 
 timestamp_t *time_node = NULL;
+#endif
 
 
 /* Description: This function closes all file descriptors and deletes the created 
@@ -95,12 +108,15 @@ void cleanup(void)
 		syslog(LOG_ERR, "Error in closing file");
 	}
 
+	// Do not remove the driver
+	#ifndef USE_AESD_CHAR_DEVICE
 	// Error handling for deleting file
-	if(remove(DATA_FILE_PATH) == ERROR)
+	if(remove(DATA_PATH) == ERROR)
 	{
 		perror("File removal");
 		syslog(LOG_ERR, " File removal failed");
 	}
+	#endif
 
 	syslog(LOG_DEBUG, "Cleanup End");
 	closelog();
@@ -204,7 +220,9 @@ void signal_handler(int signo)
 
 		close(server_fd);
 
+		#ifndef USE_AESD_CHAR_DEVICE
 		pthread_cancel(time_node -> thread_id);
+		#endif
 	}
 	syslog(LOG_DEBUG, "Exiting signal handler");
 }
@@ -220,7 +238,7 @@ void *get_in_addr(struct sockaddr *sa)
 	return &(((struct sockaddr_in6*)sa)->sin6_addr);
 }
 
-
+#ifndef USE_AESD_CHAR_DEVICE
 // Function to append a timestamp to the file
 void  *timestamp_appender(void *thread_node) 
 {
@@ -283,6 +301,7 @@ void  *timestamp_appender(void *thread_node)
 
 	}
 }
+#endif
 
 /* Description: This function handles the client connections in a thread
 */
@@ -432,7 +451,7 @@ int main(int argc, char *argv[])
 	hints.ai_flags = AI_PASSIVE;
 
 
-	file_fd = open(DATA_FILE_PATH, O_RDWR | O_APPEND | O_CREAT, 0644);
+	file_fd = open(DATA_PATH, O_RDWR | O_APPEND | O_CREAT, 0644);
 	if (file_fd == ERROR)
 	{
 		perror("File open");
@@ -509,6 +528,7 @@ int main(int argc, char *argv[])
 
 	syslog(LOG_DEBUG, "Listening for connections");
 
+	#ifndef USE_AESD_CHAR_DEVICE
 	// Malloc for timer thread
 	time_node = (timestamp_t*)malloc(sizeof(timestamp_t));
 
@@ -530,6 +550,7 @@ int main(int argc, char *argv[])
 		time_node = NULL;
 		return ERROR;
 	} 
+	#endif
 
 	while(!exit_flag)
 	{
@@ -609,12 +630,14 @@ int main(int argc, char *argv[])
 
 	syslog(LOG_DEBUG, "Finished emptying linked list for client handling threads");
 
+	#ifndef USE_AESD_CHAR_DEVICE
 	pthread_join(time_node -> thread_id, NULL);  // Timer thread
 
 	syslog(LOG_DEBUG, "Joined timer thread");
 
 	free(time_node);
 	time_node = NULL;
+	#endif
 
 	pthread_mutex_destroy(&thread_mutex);
 
