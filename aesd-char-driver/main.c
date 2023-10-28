@@ -34,7 +34,7 @@ int aesd_open(struct inode *inode, struct file *filp)
 	 * TODO: handle open
 	 */
 	aesd_device = container_of(inode->i_cdev, struct aesd_dev, cdev);
-	filp->private_data = dev;
+	filp->private_data = &aesd_device;
 	PDEBUG("open end");
 	
 	return 0;
@@ -57,6 +57,34 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
 	/**
 	 * TODO: handle read
 	 */
+
+	// Lock aesd device
+	mutex_lock(&aesd_device.lock);
+
+	struct aesd_buffer_entry = *entry;
+	size_t entry_offset_byte = 0;
+
+	entry = aesd_circular_buffer_find_entry_offset_for_fpos(&aesd_device.buffer, *f_pos, &entry_offset_byte);
+
+	if(entry)
+	{
+		size_t remaining_bytes = entry->size - entry_offset_byte;
+		size_t bytes_to_copy = min(remaining_bytes, count);
+
+		if (copy_to_user(buf, entry->buffptr + entry_offset_byte, bytes_to_copy)) 
+		{
+            		retval = -EFAULT;
+        	} 
+		else 
+		{
+            		retval = bytes_to_copy;
+            		*f_pos += retval;
+        	}
+    	}
+
+	// Unlock the mutex
+	mutex_unlock(&aesd_device.lock);
+
 	return retval;
 }
 
@@ -68,6 +96,41 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 	/**
 	 * TODO: handle write
 	 */
+
+	// Lock the mutex
+	mutex_lock(&aesd_device.lock);
+
+	if(count > 0)
+	{
+		char *write_data = kmalloc(count, GFP_KERNEL);
+
+		// Check for kmalloc failure
+		if(!write_data)
+		{
+			PDEBUG("Kmalloc failed while writing");
+			retval = -ENOMEM;
+		}
+		else 
+		{
+			// Copy from user space
+			// Check for incomplete copies
+			if(copy_from_user(write_data, buf, count))
+				retval = -EFAULT;
+			else
+			{
+				// Complete write
+				struct aesd_buffer_entry new_entry;
+				new_entry.buffptr = write_data;
+				new_entry.size = count;
+				aesd_circular_buffer_add_entry(&aesd_device.buffer, &new_entry);
+				
+				retval = count;
+			}
+		}
+	}
+
+	// Unlock the device 
+	mutex_unlock(&aesd_device.lock);
 	return retval;
 }
 struct file_operations aesd_fops = {
@@ -110,6 +173,7 @@ int aesd_init_module(void)
 	/**
 	 * TODO: initialize the AESD specific portion of the device
 	 */
+	aesd_circular_buffer_init(&aesd_device.buffer);  // Initializing buffer
 	mutex_init(&aesd_device.lock);  // Mutex Initialization
 	
 	result = aesd_setup_cdev(&aesd_device);
@@ -142,7 +206,7 @@ void aesd_cleanup_module(void)
 	}
 
 	// Destroy the mutex
-	mutex_destroy(aesd_device->lock);
+	mutex_destroy(&aesd_device.lock);
 	
 	unregister_chrdev_region(devno, 1);
 	PDEBUG("Cleanup End");
