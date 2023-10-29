@@ -5,11 +5,11 @@
 echo "Starting native unload, load and driver test script"
 make clean
 
-./module_unload
+./aesdchar_unload
 
 make
 
-./module_load 
+./aesdchar_load 
 
 ../assignment-autotest/test/assignment8/drivertest.sh
 echo "End of native unload, load and driver test script run"
