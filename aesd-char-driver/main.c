@@ -61,11 +61,12 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
 	 */
 	struct aesd_buffer_entry *entry;
 	size_t entry_offset_byte = 0;
+	struct aesd_dev *dev = filp->private_data;
 
 	// Lock aesd device
-        mutex_lock(&aesd_device.lock);
+        mutex_lock(&dev->lock);
 
-	entry = aesd_circular_buffer_find_entry_offset_for_fpos(&aesd_device.buffer, *f_pos, &entry_offset_byte);
+	entry = aesd_circular_buffer_find_entry_offset_for_fpos(&dev->buffer, *f_pos, &entry_offset_byte);
 
 	if(entry)
 	{
@@ -81,10 +82,13 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
             		retval = bytes_to_copy;
             		*f_pos += retval;
         	}
+
+		// Update the read position
+		*f_pos += bytes_to_copy;
     	}
 
 	// Unlock the mutex
-	mutex_unlock(&aesd_device.lock);
+	mutex_unlock(&dev->lock);
 
 	return retval;
 }
@@ -98,8 +102,10 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 	 * TODO: handle write
 	 */
 
+	struct aesd_dev *dev = filp->private_data;
+
 	// Lock the mutex
-	mutex_lock(&aesd_device.lock);
+	mutex_lock(&dev->lock);
 
 	if(count > 0)
 	{
@@ -114,24 +120,39 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 		else 
 		{
 			// Copy from user space
-			// Check for incomplete copies
+			// Check for bad address
 			if(copy_from_user(write_data, buf, count))
 				retval = -EFAULT;
 			else
 			{
-				// Complete write
-				struct aesd_buffer_entry new_entry;
-				new_entry.buffptr = write_data;
-				new_entry.size = count;
-				aesd_circular_buffer_add_entry(&aesd_device.buffer, &new_entry);
-				
-				retval = count;
+				// Partial writes based on new line
+				bool packet_complete_status = false;
+				size_t i;
+				for(i =0; i<count; i++)
+				{
+					if(write_data[i] == '\n')
+					{
+						packet_complete_status = true;
+						break;
+					}
+				}
+
+				if(packet_complete_status)
+				{
+					struct aesd_buffer_entry new_entry;
+					new_entry.buffptr = write_data;
+					new_entry.size = count;
+					aesd_circular_buffer_add_entry(&dev->buffer, &new_entry);
+					retval = count;
+				}
+				else
+					kfree(write_data);
 			}
 		}
 	}
 
 	// Unlock the device 
-	mutex_unlock(&aesd_device.lock);
+	mutex_unlock(&dev->lock);
 	return retval;
 }
 struct file_operations aesd_fops = {
