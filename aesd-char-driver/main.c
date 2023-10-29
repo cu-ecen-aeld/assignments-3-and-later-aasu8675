@@ -17,6 +17,7 @@
 #include <linux/types.h>
 #include <linux/cdev.h>
 #include <linux/fs.h> // file_operations
+#include <linux/slab.h>
 #include "aesdchar.h"
 #include "aesd-circular-buffer.h"
 int aesd_major =   0; // use dynamic major
@@ -33,8 +34,8 @@ int aesd_open(struct inode *inode, struct file *filp)
 	/**
 	 * TODO: handle open
 	 */
-	aesd_device = container_of(inode->i_cdev, struct aesd_dev, cdev);
-	filp->private_data = &aesd_device;
+	struct aesd_dev *dev= container_of(inode->i_cdev, struct aesd_dev, cdev);
+	filp->private_data = dev;
 	PDEBUG("open end");
 	
 	return 0;
@@ -54,15 +55,15 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
 {
 	ssize_t retval = 0;
 	PDEBUG("read %zu bytes with offset %lld",count,*f_pos);
+	
 	/**
 	 * TODO: handle read
 	 */
+	struct aesd_buffer_entry *entry;
+	size_t entry_offset_byte = 0;
 
 	// Lock aesd device
-	mutex_lock(&aesd_device.lock);
-
-	struct aesd_buffer_entry = *entry;
-	size_t entry_offset_byte = 0;
+        mutex_lock(&aesd_device.lock);
 
 	entry = aesd_circular_buffer_find_entry_offset_for_fpos(&aesd_device.buffer, *f_pos, &entry_offset_byte);
 
@@ -168,6 +169,7 @@ int aesd_init_module(void)
 		printk(KERN_WARNING "Can't get major %d\n", aesd_major);
 		return result;
 	}
+
 	memset(&aesd_device,0,sizeof(struct aesd_dev));
 
 	/**

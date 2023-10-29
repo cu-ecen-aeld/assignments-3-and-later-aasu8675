@@ -3,9 +3,12 @@
 
 #!/bin/sh
 echo "Starting native unload, load and driver test script"
+make clean
+
 ./module_unload
 
 make
+
 ./module_load 
 
 ../assignment-autotest/test/assignment8/drivertest.sh
