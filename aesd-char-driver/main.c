@@ -28,6 +28,10 @@ MODULE_LICENSE("Dual BSD/GPL");
 
 struct aesd_dev aesd_device;
 
+// Buffers to write temporary data
+static char *write_buffer = NULL;
+static size_t write_buffer_size = 0;
+
 int aesd_open(struct inode *inode, struct file *filp)
 {
 	PDEBUG("open");
@@ -37,7 +41,7 @@ int aesd_open(struct inode *inode, struct file *filp)
 	struct aesd_dev *dev= container_of(inode->i_cdev, struct aesd_dev, cdev);
 	filp->private_data = dev;
 	PDEBUG("open end");
-	
+
 	return 0;
 }
 
@@ -55,16 +59,16 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
 {
 	ssize_t retval = 0;
 	PDEBUG("read %zu bytes with offset %lld",count,*f_pos);
-	
+
 	/**
 	 * TODO: handle read
 	 */
 	struct aesd_buffer_entry *entry;
 	size_t entry_offset_byte = 0;
-	struct aesd_dev *dev = filp->private_data;
+	struct aesd_dev *dev = (struct aesd_dev *)filp->private_data;
 
 	// Lock aesd device
-        mutex_lock(&dev->lock);
+	mutex_lock(&dev->lock);
 
 	entry = aesd_circular_buffer_find_entry_offset_for_fpos(&dev->buffer, *f_pos, &entry_offset_byte);
 
@@ -75,17 +79,16 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
 
 		if (copy_to_user(buf, entry->buffptr + entry_offset_byte, bytes_to_copy)) 
 		{
-            		retval = -EFAULT;
-        	} 
+			retval = -EFAULT;
+		} 
 		else 
 		{
-            		retval = bytes_to_copy;
-            		*f_pos += retval;
-        	}
-
-		// Update the read position
-		*f_pos += bytes_to_copy;
-    	}
+			retval = bytes_to_copy;
+			*f_pos += retval;
+		}
+	}
+	else
+		*f_pos = 0;  // Null entry
 
 	// Unlock the mutex
 	mutex_unlock(&dev->lock);
@@ -102,59 +105,91 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 	 * TODO: handle write
 	 */
 
-	struct aesd_dev *dev = filp->private_data;
+	struct aesd_dev *dev = (struct aesd_dev *)filp->private_data;
 
-	// Lock the mutex
-	mutex_lock(&dev->lock);
+	struct aesd_buffer_entry entry;
 
-	if(count > 0)
+	char *write_data = kmalloc(count, GFP_KERNEL);
+
+	// Check for kmalloc failure
+	if(!write_data)
 	{
-		char *write_data = kmalloc(count, GFP_KERNEL);
+		PDEBUG("Kmalloc failed while writing");
+		retval = -ENOMEM;
+		return retval;
+	}
 
-		// Check for kmalloc failure
-		if(!write_data)
-		{
-			PDEBUG("Kmalloc failed while writing");
-			retval = -ENOMEM;
-		}
-		else 
-		{
-			// Copy from user space
-			// Check for bad address
-			if(copy_from_user(write_data, buf, count))
-				retval = -EFAULT;
-			else
-			{
-				// Partial writes based on new line
-				bool packet_complete_status = false;
-				size_t i;
-				for(i =0; i<count; i++)
-				{
-					if(write_data[i] == '\n')
-					{
-						packet_complete_status = true;
-						break;
-					}
-				}
+	if (copy_from_user(write_data, buf, count)) 
+	{
+		retval = -EFAULT;
+		kfree(write_data);
+		return retval;
+	}
 
-				if(packet_complete_status)
-				{
-					struct aesd_buffer_entry new_entry;
-					new_entry.buffptr = write_data;
-					new_entry.size = count;
-					aesd_circular_buffer_add_entry(&dev->buffer, &new_entry);
-					retval = count;
-				}
-				else
-					kfree(write_data);
-			}
+	size_t write_index = 0;  // Index for writing into the buffer
+	bool newline_found = false;
+
+	// Iterate through the write command and handle newline characters
+	while (write_index < count) 
+	{
+		if (write_data[write_index] == '\n') 
+		{
+			newline_found = true;
+			break;
 		}
 	}
 
-	// Unlock the device 
+	if(write_buffer_size == 0)
+	{
+		write_buffer = kmalloc(count * sizeof(char), GFP_KERNEL);
+		{
+			if(write_buffer == NULL)
+			{
+				PDEBUG("Kmalloc failed for global buffer");
+				retval = -ENOMEM;
+				return retval;
+			}
+		}
+	}
+	else
+	{
+		// Re-allocate bigger buffer
+		krealloc(write_buffer, (write_buffer_size + count) * sizeof(char *), GFP_KERNEL);
+		PDEBUG("End of krealloc");
+	}
+	
+	memcpy(write_buffer + write_buffer_size, write_data, count * sizeof(char));
+	write_buffer_size += count;
+
+	if(newline_found == true)
+	{
+		entry.buffptr = write_buffer;
+		entry.size = write_buffer_size;
+
+		// Lock the mutex before calling add entry
+	        mutex_lock(&dev->lock);
+		char *memory_to_be_freed = aesd_circular_buffer_add_entry(&dev->buffer, &entry);
+
+		// Memory to be free pointer holds pointer location which needs to be freed when 
+		// we overwrite an entry
+		if(memory_to_be_freed != NULL)
+			kfree(memory_to_be_freed);
+
+		// Resetting buffers for next append
+		kfree(write_buffer);
+		write_buffer = NULL;
+		write_buffer_size = 0;
+	}
+
+	retval = count;
+
+	kfree(write_data);
 	mutex_unlock(&dev->lock);
+
 	return retval;
 }
+
+
 struct file_operations aesd_fops = {
 	.owner =    THIS_MODULE,
 	.read =     aesd_read,
@@ -198,7 +233,7 @@ int aesd_init_module(void)
 	 */
 	aesd_circular_buffer_init(&aesd_device.buffer);  // Initializing buffer
 	mutex_init(&aesd_device.lock);  // Mutex Initialization
-	
+
 	result = aesd_setup_cdev(&aesd_device);
 
 	if( result ) {
@@ -230,7 +265,7 @@ void aesd_cleanup_module(void)
 
 	// Destroy the mutex
 	mutex_destroy(&aesd_device.lock);
-	
+
 	unregister_chrdev_region(devno, 1);
 	PDEBUG("Cleanup End");
 }
