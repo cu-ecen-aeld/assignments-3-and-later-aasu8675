@@ -28,6 +28,9 @@ MODULE_LICENSE("Dual BSD/GPL");
 
 struct aesd_dev aesd_device;
 
+static char *write_buffer = NULL;
+static size_t write_buffer_size = 0;
+
 int aesd_open(struct inode *inode, struct file *filp)
 {
 	PDEBUG("open");
@@ -130,10 +133,17 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 		if (write_data[write_index] == '\n') 
 		{
 			newline_found = true;
+			break;
 		}
+		write_index++;
+	}
 
-		// Check if the circular buffer is full and handle freeing old entries
-		if (dev->buffer.full) 
+	if (newline_found)
+	{
+		struct aesd_buffer_entry add_entry;
+		add_entry.buffptr = write_data;
+		add_entry.size = write_index + 1; // Include the newline character
+		if (dev->buffer.full)
 		{
 			struct aesd_buffer_entry *oldest_entry = &dev->buffer.entry[dev->buffer.out_offs];
 			kfree(oldest_entry->buffptr);
@@ -143,26 +153,39 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 			dev->buffer.full = false;
 		}
 
-		// Append the write command to the circular buffer when a newline character is found
-		if (newline_found) 
+		aesd_circular_buffer_add_entry(&dev->buffer, &add_entry);
+
+		retval = write_index + 1; // Include the newline character
+		write_data = NULL; 
+
+		// Clear global buffer it exists and reset its size
+		if(write_buffer)
 		{
-			struct aesd_buffer_entry add_entry;
-			add_entry.buffptr = write_data;
-			add_entry.size = write_index + 1;  // Include the newline character
-
-			aesd_circular_buffer_add_entry(&dev->buffer, &add_entry);
-
-			retval = write_index + 1;  // Include the newline character
-			break;
+			kfree(write_buffer);
+			write_buffer = NULL;
+			write_buffer_size = 0;
 		}
-		write_index++;
+	}
+	else
+	{
+		// Increment size of global buffer to accomodate new packet
+		size_t new_size = write_buffer_size + count;
+		char *new_buffer = krealloc(write_buffer, new_size, GFP_KERNEL);
+		if (!new_buffer)
+		{
+			PDEBUG("Krealloc failed for global write buffer");
+			kfree(write_data);
+			mutex_unlock(&dev->lock);
+			return -ENOMEM;
+		}
+
+		// Update buffer to new pointer and size
+		memcpy(new_buffer + write_buffer_size, write_data, count);
+		write_buffer = new_buffer;
+		write_buffer_size = new_size;
 	}
 
-	// If no newline character is found, free the memory
-	if (!newline_found) 
-	{
-		kfree(write_data);
-	}
+	kfree(write_data);  // Free the local buffer
 
 	// Unlock the mutex
 	mutex_unlock(&dev->lock);
