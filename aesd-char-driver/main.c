@@ -28,8 +28,8 @@ MODULE_LICENSE("Dual BSD/GPL");
 
 struct aesd_dev aesd_device;
 
-static char *write_buffer = NULL;
-static size_t write_buffer_size = 0;
+static char *global_write_buffer = NULL;
+static size_t global_write_buffer_size = 0;
 
 int aesd_open(struct inode *inode, struct file *filp)
 {
@@ -110,7 +110,6 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 	if(!write_data)
 	{
 		PDEBUG("Kmalloc failed while writing");
-		kfree(write_data);
 		return retval;
 	}
 
@@ -138,54 +137,55 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 		write_index++;
 	}
 
+	if(global_write_buffer_size == 0)
+	{
+		global_write_buffer = kmalloc(count, GFP_KERNEL);
+		if(!global_write_buffer)
+		{
+			kfree(write_data);
+			return retval;
+		}
+	}
+	else
+	{
+		global_write_buffer = krealloc(global_write_buffer, (write_index + 1 + global_write_buffer_size), GFP_KERNEL);
+
+		if(!global_write_buffer)
+		{
+			kfree(write_data);
+			return retval;
+		}
+	}
+
+	memcpy(global_write_buffer + global_write_buffer_size, write_data, write_index + 1);
+	global_write_buffer_size += (write_index + 1);
+
+
 	if (newline_found)
 	{
 		struct aesd_buffer_entry add_entry;
-		add_entry.buffptr = write_data;
-		add_entry.size = write_index + 1; // Include the newline character
+
+		add_entry.size = global_write_buffer_size;
+		add_entry.buffptr = global_write_buffer;
+
+		PDEBUG("New Buffer: %s", global_write_buffer);
+
 		if (dev->buffer.full)
 		{
 			struct aesd_buffer_entry *oldest_entry = &dev->buffer.entry[dev->buffer.out_offs];
 			kfree(oldest_entry->buffptr);
 			oldest_entry->buffptr = NULL;
 			oldest_entry->size = 0;
-			dev->buffer.out_offs = (dev->buffer.out_offs + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
-			dev->buffer.full = false;
 		}
 
 		aesd_circular_buffer_add_entry(&dev->buffer, &add_entry);
 
-		retval = write_index + 1; // Include the newline character
-		write_data = NULL; 
-
-		// Clear global buffer it exists and reset its size
-		if(write_buffer)
-		{
-			kfree(write_buffer);
-			write_buffer = NULL;
-			write_buffer_size = 0;
-		}
-	}
-	else
-	{
-		// Increment size of global buffer to accomodate new packet
-		size_t new_size = write_buffer_size + count;
-		char *new_buffer = krealloc(write_buffer, new_size, GFP_KERNEL);
-		if (!new_buffer)
-		{
-			PDEBUG("Krealloc failed for global write buffer");
-			kfree(write_data);
-			mutex_unlock(&dev->lock);
-			return -ENOMEM;
-		}
-
-		// Update buffer to new pointer and size
-		memcpy(new_buffer + write_buffer_size, write_data, count);
-		write_buffer = new_buffer;
-		write_buffer_size = new_size;
+		global_write_buffer_size = 0;
 	}
 
-	kfree(write_data);  // Free the local buffer
+	retval = write_index + 1;
+
+	kfree(write_data);
 
 	// Unlock the mutex
 	mutex_unlock(&dev->lock);
@@ -238,6 +238,7 @@ int aesd_init_module(void)
 	aesd_circular_buffer_init(&aesd_device.buffer);  // Initializing buffer
 	mutex_init(&aesd_device.lock);  // Mutex Initialization
 
+	//global_write_buffer = kmalloc(1, GFP_KERNEL); // Dummy Initialization
 	result = aesd_setup_cdev(&aesd_device);
 
 	if( result ) {
@@ -266,6 +267,15 @@ void aesd_cleanup_module(void)
 	{
 		kfree(entry->buffptr);
 	}
+
+	// Clear global buffer it exists and reset its size
+	if(global_write_buffer)
+	{
+		kfree(global_write_buffer);
+		global_write_buffer = NULL;
+		global_write_buffer_size = 0;
+	}
+
 
 	// Destroy the mutex
 	mutex_destroy(&aesd_device.lock);
