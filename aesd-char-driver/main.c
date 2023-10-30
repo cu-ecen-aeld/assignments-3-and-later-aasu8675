@@ -28,10 +28,6 @@ MODULE_LICENSE("Dual BSD/GPL");
 
 struct aesd_dev aesd_device;
 
-// Buffers to write temporary data
-static char *write_buffer = NULL;
-static size_t write_buffer_size = 0;
-
 int aesd_open(struct inode *inode, struct file *filp)
 {
 	PDEBUG("open");
@@ -65,7 +61,7 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
 	 */
 	struct aesd_buffer_entry *entry;
 	size_t entry_offset_byte = 0;
-	struct aesd_dev *dev = (struct aesd_dev *)filp->private_data;
+	struct aesd_dev *dev = filp->private_data;
 
 	// Lock aesd device
 	mutex_lock(&dev->lock);
@@ -87,8 +83,6 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
 			*f_pos += retval;
 		}
 	}
-	else
-		*f_pos = 0;  // Null entry
 
 	// Unlock the mutex
 	mutex_unlock(&dev->lock);
@@ -105,9 +99,7 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 	 * TODO: handle write
 	 */
 
-	struct aesd_dev *dev = (struct aesd_dev *)filp->private_data;
-
-	struct aesd_buffer_entry entry;
+	struct aesd_dev *dev = filp->private_data;
 
 	char *write_data = kmalloc(count, GFP_KERNEL);
 
@@ -115,7 +107,7 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 	if(!write_data)
 	{
 		PDEBUG("Kmalloc failed while writing");
-		retval = -ENOMEM;
+		kfree(write_data);
 		return retval;
 	}
 
@@ -126,6 +118,9 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 		return retval;
 	}
 
+	// Lock the mutex 
+	mutex_lock(&dev->lock);
+
 	size_t write_index = 0;  // Index for writing into the buffer
 	bool newline_found = false;
 
@@ -135,55 +130,41 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 		if (write_data[write_index] == '\n') 
 		{
 			newline_found = true;
+		}
+
+		// Check if the circular buffer is full and handle freeing old entries
+		if (dev->buffer.full) 
+		{
+			struct aesd_buffer_entry *oldest_entry = &dev->buffer.entry[dev->buffer.out_offs];
+			kfree(oldest_entry->buffptr);
+			oldest_entry->buffptr = NULL;
+			oldest_entry->size = 0;
+			dev->buffer.out_offs = (dev->buffer.out_offs + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+			dev->buffer.full = false;
+		}
+
+		// Append the write command to the circular buffer when a newline character is found
+		if (newline_found) 
+		{
+			struct aesd_buffer_entry add_entry;
+			add_entry.buffptr = write_data;
+			add_entry.size = write_index + 1;  // Include the newline character
+
+			aesd_circular_buffer_add_entry(&dev->buffer, &add_entry);
+
+			retval = write_index + 1;  // Include the newline character
 			break;
 		}
+		write_index++;
 	}
 
-	if(write_buffer_size == 0)
+	// If no newline character is found, free the memory
+	if (!newline_found) 
 	{
-		write_buffer = kmalloc(count * sizeof(char), GFP_KERNEL);
-		{
-			if(write_buffer == NULL)
-			{
-				PDEBUG("Kmalloc failed for global buffer");
-				retval = -ENOMEM;
-				return retval;
-			}
-		}
-	}
-	else
-	{
-		// Re-allocate bigger buffer
-		krealloc(write_buffer, (write_buffer_size + count) * sizeof(char *), GFP_KERNEL);
-		PDEBUG("End of krealloc");
-	}
-	
-	memcpy(write_buffer + write_buffer_size, write_data, count * sizeof(char));
-	write_buffer_size += count;
-
-	if(newline_found == true)
-	{
-		entry.buffptr = write_buffer;
-		entry.size = write_buffer_size;
-
-		// Lock the mutex before calling add entry
-	        mutex_lock(&dev->lock);
-		char *memory_to_be_freed = aesd_circular_buffer_add_entry(&dev->buffer, &entry);
-
-		// Memory to be free pointer holds pointer location which needs to be freed when 
-		// we overwrite an entry
-		if(memory_to_be_freed != NULL)
-			kfree(memory_to_be_freed);
-
-		// Resetting buffers for next append
-		kfree(write_buffer);
-		write_buffer = NULL;
-		write_buffer_size = 0;
+		kfree(write_data);
 	}
 
-	retval = count;
-
-	kfree(write_data);
+	// Unlock the mutex
 	mutex_unlock(&dev->lock);
 
 	return retval;
