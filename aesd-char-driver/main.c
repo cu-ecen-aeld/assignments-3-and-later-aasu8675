@@ -137,6 +137,12 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 		write_index++;
 	}
 
+	size_t append_index = 0;
+
+	if(newline_found == true)
+		append_index = write_index + 1;
+	else
+		append_index = count;
 	if(global_write_buffer_size == 0)
 	{
 		global_write_buffer = kmalloc(count, GFP_KERNEL);
@@ -148,7 +154,7 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 	}
 	else
 	{
-		global_write_buffer = krealloc(global_write_buffer, (write_index + 1 + global_write_buffer_size), GFP_KERNEL);
+		global_write_buffer = krealloc(global_write_buffer, (append_index + global_write_buffer_size), GFP_KERNEL);
 
 		if(!global_write_buffer)
 		{
@@ -157,8 +163,8 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 		}
 	}
 
-	memcpy(global_write_buffer + global_write_buffer_size, write_data, write_index + 1);
-	global_write_buffer_size += (write_index + 1);
+	memcpy(global_write_buffer + global_write_buffer_size, write_data, append_index);
+	global_write_buffer_size += (append_index);
 
 
 	if (newline_found)
@@ -170,22 +176,27 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 
 		PDEBUG("New Buffer: %s", global_write_buffer);
 
+		struct aesd_buffer_entry *oldest_entry = NULL;
+
 		if (dev->buffer.full)
-		{
-			struct aesd_buffer_entry *oldest_entry = &dev->buffer.entry[dev->buffer.out_offs];
-			kfree(oldest_entry->buffptr);
-			oldest_entry->buffptr = NULL;
-			oldest_entry->size = 0;
-		}
+                {
+                        oldest_entry = &dev->buffer.entry[dev->buffer.in_offs];		
+      		        if(oldest_entry->buffptr)
+				kfree(oldest_entry->buffptr);
+                        oldest_entry->buffptr = NULL;
+                        oldest_entry->size = 0;
+                }
+
 
 		aesd_circular_buffer_add_entry(&dev->buffer, &add_entry);
 
 		global_write_buffer_size = 0;
 	}
 
-	retval = write_index + 1;
+	retval = append_index;
 
-	kfree(write_data);
+	if(write_data)
+		kfree(write_data);
 
 	// Unlock the mutex
 	mutex_unlock(&dev->lock);
@@ -265,7 +276,8 @@ void aesd_cleanup_module(void)
 	// Freeing memory
 	AESD_CIRCULAR_BUFFER_FOREACH(entry, &aesd_device.buffer, i)
 	{
-		kfree(entry->buffptr);
+		if(entry->buffptr)
+			kfree(entry->buffptr);
 	}
 
 	// Clear global buffer it exists and reset its size
