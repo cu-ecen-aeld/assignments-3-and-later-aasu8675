@@ -50,6 +50,7 @@ int aesd_release(struct inode *inode, struct file *filp)
 	/**
 	 * TODO: handle release
 	 */
+	filp->private_data = NULL;
 	return 0;
 }
 
@@ -59,6 +60,11 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
 	ssize_t retval = 0;
 	PDEBUG("read %zu bytes with offset %lld",count,*f_pos);
 
+	if((filp == NULL) || (buf == NULL))
+	{
+		return -EINVAL;
+	}
+
 	/**
 	 * TODO: handle read
 	 */
@@ -67,7 +73,11 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
 	struct aesd_dev *dev = filp->private_data;
 
 	// Lock aesd device
-	mutex_lock(&dev->lock);
+	if(mutex_lock_interruptible(&dev->lock) != 0)
+	{
+		PDEBUG("Error in read mutex locking");
+		return -ERESTARTSYS;
+	}
 
 	entry = aesd_circular_buffer_find_entry_offset_for_fpos(&dev->buffer, *f_pos, &entry_offset_byte);
 
@@ -97,6 +107,12 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 		loff_t *f_pos)
 {
 	ssize_t retval = -ENOMEM;
+	
+	if((filp == NULL) || (buf == NULL))
+        {
+                return -EINVAL;
+        }
+
 	PDEBUG("write %zu bytes with offset %lld",count,*f_pos);
 	/**
 	 * TODO: handle write
@@ -120,8 +136,12 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 		return retval;
 	}
 
-	// Lock the mutex 
-	mutex_lock(&dev->lock);
+	// Lock the mutex
+	if(mutex_lock_interruptible(&dev->lock) != 0)
+        {
+                PDEBUG("Error in write mutex locking");
+                return -ERESTARTSYS;
+        }
 
 	size_t write_index = 0;  // Index for writing into the buffer
 	bool newline_found = false;
@@ -270,14 +290,17 @@ void aesd_cleanup_module(void)
 	 * TODO: cleanup AESD specific poritions here as necessary
 	 */
 
-	uint8_t i;
+	uint8_t i = 0;
 	struct aesd_buffer_entry *entry;
 
 	// Freeing memory
 	AESD_CIRCULAR_BUFFER_FOREACH(entry, &aesd_device.buffer, i)
 	{
 		if(entry->buffptr)
+		{
 			kfree(entry->buffptr);
+			entry->buffptr = NULL;
+		}
 	}
 
 	// Clear global buffer it exists and reset its size
