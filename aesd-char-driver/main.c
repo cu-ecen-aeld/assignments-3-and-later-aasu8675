@@ -50,7 +50,7 @@ int aesd_release(struct inode *inode, struct file *filp)
 	/**
 	 * TODO: handle release
 	 */
-	filp->private_data = NULL;
+	//filp->private_data = NULL;
 	return 0;
 }
 
@@ -221,6 +221,8 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 	// Unlock the mutex
 	mutex_unlock(&dev->lock);
 
+	*f_pos += retval;  // Update file position
+
 	return retval;
 }
 
@@ -293,27 +295,22 @@ void aesd_cleanup_module(void)
 	uint8_t i = 0;
 	struct aesd_buffer_entry *entry;
 
+	PDEBUG("Just before freeing circular buffer");
 	// Freeing memory
 	AESD_CIRCULAR_BUFFER_FOREACH(entry, &aesd_device.buffer, i)
 	{
-		if(entry->buffptr)
+		if(entry->buffptr != NULL)
 		{
+			PDEBUG("Circular Buffer Empty in Progress for Buffer: %d",i);
 			kfree(entry->buffptr);
 			entry->buffptr = NULL;
 		}
 	}
 
-	// Clear global buffer it exists and reset its size
-	if(global_write_buffer)
-	{
-		kfree(global_write_buffer);
-		global_write_buffer = NULL;
-		global_write_buffer_size = 0;
-	}
-
-
 	// Destroy the mutex
 	mutex_destroy(&aesd_device.lock);
+
+	PDEBUG("Mutex destroyed for aesd device");
 
 	unregister_chrdev_region(devno, 1);
 	PDEBUG("Cleanup End");

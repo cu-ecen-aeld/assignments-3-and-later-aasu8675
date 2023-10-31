@@ -47,7 +47,9 @@
 #define MAX_BUFFER_SIZE 1024
 #define TIME_STAMP_INTERVAL_IN_SECS (10)
 
-#define USE_AESD_CHAR_DEVICE // Build switch to use character device
+
+// Used as a build switch for device driver
+#define USE_AESD_CHAR_DEVICE
 
 // Using buildswitch for character device driver
 #ifdef USE_AESD_CHAR_DEVICE
@@ -57,11 +59,8 @@
 #endif
 
 
-
-
 int server_fd, client_fd;  // File descriptors for server and client
 int file_fd;  // Files descriptor for the data file
-// bool error_flag = false, 
 bool daemon_flag = false;
 volatile sig_atomic_t exit_flag = 0;
 
@@ -298,7 +297,6 @@ void  *timestamp_appender(void *thread_node)
 			syslog(LOG_ERR, "Mutex Unlock");
 			return NULL;
 		}
-
 	}
 }
 #endif
@@ -322,6 +320,12 @@ void *client_handler(void *client_thread)
 
 	memset(buf, '\0', MAX_BUFFER_SIZE); // Clear the buffer
 
+	file_fd = open(DATA_PATH, O_RDWR | O_APPEND | O_CREAT, 0644);
+        if (file_fd == ERROR)
+        {
+                perror("File open");
+                syslog(LOG_ERR, "File Open");
+        }
 	while(1)
 	{
 		bytes_received = recv(node -> connection_fd, buf, MAX_BUFFER_SIZE, 0);
@@ -348,7 +352,6 @@ void *client_handler(void *client_thread)
 			return NULL;
 		}
 
-		// Unlock the mutex after writing to the file
 		if(pthread_mutex_unlock(node -> thread_mutex) != SUCCESS)
 		{
 			perror("Mutex unlock failure");
@@ -361,16 +364,28 @@ void *client_handler(void *client_thread)
 			break;
 	}
 
+	close(file_fd);
+	
 	// Read from the file and send it to the client
 	int sent_bytes = 0;
 	memset(buf, '\0', MAX_BUFFER_SIZE); // Clear the buffer
 
+	#ifndef USE_AESD_CHAR_DEVICE
 	if(lseek(file_fd , 0, SEEK_SET) == ERROR)
 	{
 		perror("lseek");
 		syslog(LOG_ERR, "lseek failed");
 		return NULL;
 	}
+	#endif
+
+	// Open fd for read mode
+	file_fd = open(DATA_PATH, O_RDONLY, 0444);
+        if (file_fd == ERROR)
+        {
+                perror("File open");
+                syslog(LOG_ERR, "File Open");
+        }
 
 	while(1)
 	{
@@ -401,6 +416,7 @@ void *client_handler(void *client_thread)
 	close(node -> connection_fd);
 	node -> thread_completion_status = true;
 
+	close(file_fd);
 	return client_thread;
 }
 
@@ -427,16 +443,15 @@ int main(int argc, char *argv[])
 	struct sockaddr_storage their_addr; // connector's/clients address information
 	socklen_t sin_size = sizeof(struct sockaddr_storage);
 	pthread_mutex_t thread_mutex;
-
 	client_node_t *data_node_ptr = NULL;
 
+	
 	if(pthread_mutex_init(&thread_mutex, NULL) != SUCCESS) 
 	{
 		perror("Mutex Initialization");
 		syslog(LOG_ERR, "Mutex Initialization");
 		return ERROR;
 	}
-
 
 	int yes=1;
 	char s[INET6_ADDRSTRLEN];	
@@ -449,15 +464,6 @@ int main(int argc, char *argv[])
 	hints.ai_family = AF_INET;  // For IPV4 
 	hints.ai_socktype = SOCK_STREAM;
 	hints.ai_flags = AI_PASSIVE;
-
-
-	file_fd = open(DATA_PATH, O_RDWR | O_APPEND | O_CREAT, 0644);
-	if (file_fd == ERROR)
-	{
-		perror("File open");
-		syslog(LOG_ERR, "File Open");
-		return ERROR;
-	} 
 
 
 	// Get socket address information
@@ -637,9 +643,9 @@ int main(int argc, char *argv[])
 
 	free(time_node);
 	time_node = NULL;
+	pthread_mutex_destroy(&thread_mutex);
 	#endif
 
-	pthread_mutex_destroy(&thread_mutex);
 
 	syslog(LOG_DEBUG, "Before cleanup in main");
 	cleanup();
