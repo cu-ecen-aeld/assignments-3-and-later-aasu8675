@@ -45,11 +45,22 @@
 #define SUCCESS (0)
 #define BACKLOG (10)  // Number of pending connection queue will hold
 #define MAX_BUFFER_SIZE 1024
-#define DATA_FILE_PATH "/var/tmp/aesdsocketdata"
 #define TIME_STAMP_INTERVAL_IN_SECS (10)
+
+
+// Used as a build switch for device driver
+#define USE_AESD_CHAR_DEVICE
+
+// Using buildswitch for character device driver
+#ifdef USE_AESD_CHAR_DEVICE
+	#define DATA_PATH "/dev/aesdchar"
+#else
+	#define DATA_PATH "/var/tmp/aesdsocketdata"
+#endif
+
+
 int server_fd, client_fd;  // File descriptors for server and client
 int file_fd;  // Files descriptor for the data file
-// bool error_flag = false, 
 bool daemon_flag = false;
 volatile sig_atomic_t exit_flag = 0;
 
@@ -63,7 +74,7 @@ typedef struct client_node
 	SLIST_ENTRY(client_node) next_node;  // Pointer to next elemenet
 } client_node_t;
 
-
+#ifndef USE_AESD_CHAR_DEVICE
 // Struct for timestamp thread
 typedef struct timestamp
 {
@@ -73,6 +84,7 @@ typedef struct timestamp
 
 
 timestamp_t *time_node = NULL;
+#endif
 
 
 /* Description: This function closes all file descriptors and deletes the created 
@@ -95,12 +107,15 @@ void cleanup(void)
 		syslog(LOG_ERR, "Error in closing file");
 	}
 
+	// Do not remove the driver
+	#ifndef USE_AESD_CHAR_DEVICE
 	// Error handling for deleting file
-	if(remove(DATA_FILE_PATH) == ERROR)
+	if(remove(DATA_PATH) == ERROR)
 	{
 		perror("File removal");
 		syslog(LOG_ERR, " File removal failed");
 	}
+	#endif
 
 	syslog(LOG_DEBUG, "Cleanup End");
 	closelog();
@@ -204,7 +219,9 @@ void signal_handler(int signo)
 
 		close(server_fd);
 
+		#ifndef USE_AESD_CHAR_DEVICE
 		pthread_cancel(time_node -> thread_id);
+		#endif
 	}
 	syslog(LOG_DEBUG, "Exiting signal handler");
 }
@@ -220,7 +237,7 @@ void *get_in_addr(struct sockaddr *sa)
 	return &(((struct sockaddr_in6*)sa)->sin6_addr);
 }
 
-
+#ifndef USE_AESD_CHAR_DEVICE
 // Function to append a timestamp to the file
 void  *timestamp_appender(void *thread_node) 
 {
@@ -280,9 +297,9 @@ void  *timestamp_appender(void *thread_node)
 			syslog(LOG_ERR, "Mutex Unlock");
 			return NULL;
 		}
-
 	}
 }
+#endif
 
 /* Description: This function handles the client connections in a thread
 */
@@ -303,6 +320,12 @@ void *client_handler(void *client_thread)
 
 	memset(buf, '\0', MAX_BUFFER_SIZE); // Clear the buffer
 
+	file_fd = open(DATA_PATH, O_RDWR | O_APPEND | O_CREAT, 0644);
+        if (file_fd == ERROR)
+        {
+                perror("File open");
+                syslog(LOG_ERR, "File Open");
+        }
 	while(1)
 	{
 		bytes_received = recv(node -> connection_fd, buf, MAX_BUFFER_SIZE, 0);
@@ -329,7 +352,6 @@ void *client_handler(void *client_thread)
 			return NULL;
 		}
 
-		// Unlock the mutex after writing to the file
 		if(pthread_mutex_unlock(node -> thread_mutex) != SUCCESS)
 		{
 			perror("Mutex unlock failure");
@@ -342,16 +364,28 @@ void *client_handler(void *client_thread)
 			break;
 	}
 
+	close(file_fd);
+	
 	// Read from the file and send it to the client
 	int sent_bytes = 0;
 	memset(buf, '\0', MAX_BUFFER_SIZE); // Clear the buffer
 
+	#ifndef USE_AESD_CHAR_DEVICE
 	if(lseek(file_fd , 0, SEEK_SET) == ERROR)
 	{
 		perror("lseek");
 		syslog(LOG_ERR, "lseek failed");
 		return NULL;
 	}
+	#endif
+
+	// Open fd for read mode
+	file_fd = open(DATA_PATH, O_RDONLY, 0444);
+        if (file_fd == ERROR)
+        {
+                perror("File open");
+                syslog(LOG_ERR, "File Open");
+        }
 
 	while(1)
 	{
@@ -382,6 +416,7 @@ void *client_handler(void *client_thread)
 	close(node -> connection_fd);
 	node -> thread_completion_status = true;
 
+	close(file_fd);
 	return client_thread;
 }
 
@@ -408,16 +443,15 @@ int main(int argc, char *argv[])
 	struct sockaddr_storage their_addr; // connector's/clients address information
 	socklen_t sin_size = sizeof(struct sockaddr_storage);
 	pthread_mutex_t thread_mutex;
-
 	client_node_t *data_node_ptr = NULL;
 
+	
 	if(pthread_mutex_init(&thread_mutex, NULL) != SUCCESS) 
 	{
 		perror("Mutex Initialization");
 		syslog(LOG_ERR, "Mutex Initialization");
 		return ERROR;
 	}
-
 
 	int yes=1;
 	char s[INET6_ADDRSTRLEN];	
@@ -430,15 +464,6 @@ int main(int argc, char *argv[])
 	hints.ai_family = AF_INET;  // For IPV4 
 	hints.ai_socktype = SOCK_STREAM;
 	hints.ai_flags = AI_PASSIVE;
-
-
-	file_fd = open(DATA_FILE_PATH, O_RDWR | O_APPEND | O_CREAT, 0644);
-	if (file_fd == ERROR)
-	{
-		perror("File open");
-		syslog(LOG_ERR, "File Open");
-		return ERROR;
-	} 
 
 
 	// Get socket address information
@@ -509,6 +534,7 @@ int main(int argc, char *argv[])
 
 	syslog(LOG_DEBUG, "Listening for connections");
 
+	#ifndef USE_AESD_CHAR_DEVICE
 	// Malloc for timer thread
 	time_node = (timestamp_t*)malloc(sizeof(timestamp_t));
 
@@ -530,6 +556,7 @@ int main(int argc, char *argv[])
 		time_node = NULL;
 		return ERROR;
 	} 
+	#endif
 
 	while(!exit_flag)
 	{
@@ -609,14 +636,16 @@ int main(int argc, char *argv[])
 
 	syslog(LOG_DEBUG, "Finished emptying linked list for client handling threads");
 
+	#ifndef USE_AESD_CHAR_DEVICE
 	pthread_join(time_node -> thread_id, NULL);  // Timer thread
 
 	syslog(LOG_DEBUG, "Joined timer thread");
 
 	free(time_node);
 	time_node = NULL;
-
 	pthread_mutex_destroy(&thread_mutex);
+	#endif
+
 
 	syslog(LOG_DEBUG, "Before cleanup in main");
 	cleanup();
