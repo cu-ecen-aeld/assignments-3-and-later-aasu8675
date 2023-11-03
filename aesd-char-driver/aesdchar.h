@@ -31,6 +31,9 @@ struct aesd_dev
 	struct aesd_circular_buffer buffer;	/* Buffer Entry Point	*/
 	struct mutex lock;
 	struct cdev cdev;     /* Char device structure      */
+	char *temp_buffer;  // Buffer to copy temporary unappended entry
+	size_t temp_buffer_size;  // Temporary unappended buffer entry size
+
 };
 
 

@@ -28,9 +28,6 @@ MODULE_LICENSE("Dual BSD/GPL");
 
 struct aesd_dev aesd_device;
 
-static char *global_write_buffer = NULL;
-static size_t global_write_buffer_size = 0;
-
 int aesd_open(struct inode *inode, struct file *filp)
 {
 	PDEBUG("open");
@@ -50,7 +47,6 @@ int aesd_release(struct inode *inode, struct file *filp)
 	/**
 	 * TODO: handle release
 	 */
-	//filp->private_data = NULL;
 	return 0;
 }
 
@@ -163,38 +159,40 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 		append_index = write_index + 1;
 	else
 		append_index = count;
-	if(global_write_buffer_size == 0)
+	if(dev->temp_buffer_size == 0)
 	{
-		global_write_buffer = kmalloc(count, GFP_KERNEL);
-		if(!global_write_buffer)
+		dev->temp_buffer = kmalloc(count, GFP_KERNEL);
+		if(!(dev->temp_buffer))
 		{
 			kfree(write_data);
+			mutex_unlock(&dev->lock);
 			return retval;
 		}
 	}
 	else
 	{
-		global_write_buffer = krealloc(global_write_buffer, (append_index + global_write_buffer_size), GFP_KERNEL);
+		dev->temp_buffer = krealloc(dev->temp_buffer, (append_index + dev->temp_buffer_size), GFP_KERNEL);
 
-		if(!global_write_buffer)
+		if(!(dev->temp_buffer))
 		{
 			kfree(write_data);
+			mutex_unlock(&dev->lock);
 			return retval;
 		}
 	}
 
-	memcpy(global_write_buffer + global_write_buffer_size, write_data, append_index);
-	global_write_buffer_size += (append_index);
+	memcpy(dev->temp_buffer + dev->temp_buffer_size, write_data, append_index);
+	dev->temp_buffer_size += (append_index);
 
 
 	if (newline_found)
 	{
 		struct aesd_buffer_entry add_entry;
 
-		add_entry.size = global_write_buffer_size;
-		add_entry.buffptr = global_write_buffer;
+		add_entry.size = dev->temp_buffer_size;
+		add_entry.buffptr = dev->temp_buffer;
 
-		PDEBUG("New Buffer: %s", global_write_buffer);
+		PDEBUG("New Buffer: %s", dev->temp_buffer);
 
 		struct aesd_buffer_entry *oldest_entry = NULL;
 
@@ -210,7 +208,7 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 
 		aesd_circular_buffer_add_entry(&dev->buffer, &add_entry);
 
-		global_write_buffer_size = 0;
+		dev->temp_buffer_size = 0;
 	}
 
 	retval = append_index;
@@ -271,7 +269,7 @@ int aesd_init_module(void)
 	aesd_circular_buffer_init(&aesd_device.buffer);  // Initializing buffer
 	mutex_init(&aesd_device.lock);  // Mutex Initialization
 
-	//global_write_buffer = kmalloc(1, GFP_KERNEL); // Dummy Initialization
+
 	result = aesd_setup_cdev(&aesd_device);
 
 	if( result ) {
@@ -305,6 +303,9 @@ void aesd_cleanup_module(void)
 			kfree(entry->buffptr);
 			entry->buffptr = NULL;
 		}
+
+		kfree(entry);
+		entry = NULL;
 	}
 
 	// Destroy the mutex
