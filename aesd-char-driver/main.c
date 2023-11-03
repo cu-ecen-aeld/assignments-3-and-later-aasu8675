@@ -303,10 +303,10 @@ void aesd_cleanup_module(void)
 			kfree(entry->buffptr);
 			entry->buffptr = NULL;
 		}
-
-		kfree(entry);
-		entry = NULL;
 	}
+
+	kfree(&aesd_device.temp_buffer);
+	kfree(&aesd_device.buffer);
 
 	// Destroy the mutex
 	mutex_destroy(&aesd_device.lock);
