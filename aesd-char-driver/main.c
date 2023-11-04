@@ -20,6 +20,7 @@
 #include <linux/slab.h>
 #include "aesdchar.h"
 #include "aesd-circular-buffer.h"
+#include "aesd_ioctl.h"
 int aesd_major =   0; // use dynamic major
 int aesd_minor =   0;
 
@@ -103,11 +104,11 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 		loff_t *f_pos)
 {
 	ssize_t retval = -ENOMEM;
-	
+
 	if((filp == NULL) || (buf == NULL))
-        {
-                return -EINVAL;
-        }
+	{
+		return -EINVAL;
+	}
 
 	PDEBUG("write %zu bytes with offset %lld",count,*f_pos);
 	/**
@@ -134,10 +135,11 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 
 	// Lock the mutex
 	if(mutex_lock_interruptible(&dev->lock) != 0)
-        {
-                PDEBUG("Error in write mutex locking");
-                return -ERESTARTSYS;
-        }
+	{
+		PDEBUG("Error in write mutex locking");
+		retval = -ERESTARTSYS;
+		return retval;
+	}
 
 	size_t write_index = 0;  // Index for writing into the buffer
 	bool newline_found = false;
@@ -197,16 +199,19 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 		struct aesd_buffer_entry *oldest_entry = NULL;
 
 		if (dev->buffer.full)
-                {
-                        oldest_entry = &dev->buffer.entry[dev->buffer.in_offs];		
-      		        if(oldest_entry->buffptr)
+		{
+			oldest_entry = &dev->buffer.entry[dev->buffer.in_offs];		
+			if(oldest_entry->buffptr)
 				kfree(oldest_entry->buffptr);
-                        oldest_entry->buffptr = NULL;
-                        oldest_entry->size = 0;
-                }
+			oldest_entry->buffptr = NULL;
+			oldest_entry->size = 0;
+		}
 
 
 		aesd_circular_buffer_add_entry(&dev->buffer, &add_entry);
+
+		// buffer_size is used for seeking functionality
+		dev->buffer_size += add_entry.size; // Updating concatenated circular buffer length
 
 		dev->temp_buffer_size = 0;
 	}
@@ -225,12 +230,108 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 }
 
 
+/*
+ * Description: Kernel lseek implementation
+ * file: File structure to seek on
+ * offset: file offset to seek to
+ * whence: type of seek
+ */
+loff_t aesd_llseek(struct file *file, loff_t offset, int whence)
+{
+	PDEBUG("Start of llseek");
+	loff_t retval;
+	struct aesd_dev *dev = file->private_data;
+
+	mutex_lock(&aesd_device.lock);
+	retval = fixed_size_llseek(file, offset, whence, dev->buffer_size);
+	PDEBUG("Return Value from fixed size llseek: %lld", retval);
+	mutex_unlock(&aesd_device.lock);
+
+	PDEBUG("End of llseek");
+	return retval;
+}
+
+/*
+ * Adjust the file offset (f_pos) parameter filp based on the location specified by 
+ * @param write_cmd (referenced command to locate)
+ * and @param write_cmd_offset (the zero referenced offset command to locate)
+ * @ return 0 if successful, negative if error occured
+ * 	ERESTARTSYS if mutex cound not be obtained
+ * 	EINVAL if write_cmd or write_cmd_offset was out of range
+ */
+static long aesd_adjust_file_offset(struct file *filp, unsigned int write_cmd, unsigned int write_cmd_offset)
+{
+	long retval = 0;
+	struct aesd_dev *dev = filp->private_data;
+	loff_t updated_fpos_offset = 0;
+
+	mutex_lock(&aesd_device.lock);
+
+	// Check for valid write_cmd
+	if (write_cmd >= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED)
+	{
+		retval = -EINVAL;
+		mutex_unlock(&aesd_device.lock);
+		return retval;
+
+	}
+
+	// Check for valid_cmd_offset
+	if (write_cmd_offset >= dev->buffer.entry[write_cmd].size)
+	{
+		retval = -EINVAL;
+		mutex_unlock(&aesd_device.lock);
+		return retval;
+
+	}
+
+	unsigned int i = 0;
+	for (i = 0; i < write_cmd; i++)
+	{
+		updated_fpos_offset += dev->buffer.entry[i].size;
+	}
+
+	filp->f_pos = updated_fpos_offset + write_cmd_offset;  // Updating file pointer with new located offset
+
+	mutex_unlock(&aesd_device.lock);
+	return retval;	// Success case where retval is zero
+}
+
+
+long aesd_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+	long retval = 0;
+
+	// Unused ioctl command and maximum command supported bound checking
+	if ((_IOC_TYPE(cmd) != AESD_IOC_MAGIC) || (_IOC_NR(cmd) > AESDCHAR_IOC_MAXNR))
+	{
+		retval = -ENOTTY;  // Return code for NA operation
+		return retval;
+	}
+	struct aesd_seekto seekto;
+	switch (cmd)
+	{
+		case AESDCHAR_IOCSEEKTO:
+			if (copy_from_user(&seekto, (const void __user *)arg, sizeof(seekto)) != 0)
+				retval = -EFAULT;
+			else
+				retval = aesd_adjust_file_offset(filp, seekto.write_cmd, seekto.write_cmd_offset);
+			break;
+
+		default:
+			break;
+	}
+	return retval;
+}
+
 struct file_operations aesd_fops = {
 	.owner =    THIS_MODULE,
 	.read =     aesd_read,
 	.write =    aesd_write,
 	.open =     aesd_open,
 	.release =  aesd_release,
+	.llseek = aesd_llseek,
+	.unlocked_ioctl = aesd_ioctl,
 };
 
 static int aesd_setup_cdev(struct aesd_dev *dev)
@@ -246,7 +347,6 @@ static int aesd_setup_cdev(struct aesd_dev *dev)
 	}
 	return err;
 }
-
 
 
 int aesd_init_module(void)
