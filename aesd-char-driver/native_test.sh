@@ -11,5 +11,5 @@ make
 
 ./aesdchar_load 
 
-../assignment-autotest/test/assignment8/drivertest.sh
+../assignment-autotest/test/assignment9/drivertest.sh
 echo "End of native unload, load and driver test script run"
