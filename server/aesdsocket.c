@@ -370,7 +370,7 @@ void *client_handler(void *client_thread)
 		struct aesd_seekto seekto;
                 sscanf(buf, "AESDCHAR_IOCSEEKTO:%d,%d", &seekto.write_cmd, &seekto.write_cmd_offset);
                 // Append after opening and do not close the file descriptor to honour the seek from ioctl
-		file_fd = open(DATA_PATH, O_RDWR);
+		file_fd = open(DATA_PATH, O_RDWR, 0666);
                 if (file_fd == ERROR) 
 		{
                     perror("File open error");
@@ -390,7 +390,7 @@ void *client_handler(void *client_thread)
             } 
 	    else 
 	    {
-                file_fd = open(DATA_PATH, O_CREAT | O_RDWR | O_APPEND);
+                file_fd = open(DATA_PATH, O_CREAT | O_RDWR | O_APPEND,0666);
                 if (file_fd == ERROR) 
 		{
                     perror("File open error");
@@ -425,7 +425,7 @@ void *client_handler(void *client_thread)
 	    // If ioctl command was not received, we need to reopen for read
             if(!ioctl_recv)
 	    {
-                file_fd = open(DATA_PATH, O_RDONLY);
+                file_fd = open(DATA_PATH, O_RDONLY,0644);
             }
 
 
