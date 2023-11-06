@@ -38,6 +38,7 @@
 #include <time.h>
 #include <sys/stat.h>
 #include "queue.h"
+#include "../aesd-char-driver/aesd_ioctl.h"
 
 /*****************************************DEFINES***********************************/
 #define PORT "9000"
@@ -53,9 +54,9 @@
 
 // Using buildswitch for character device driver
 #ifdef USE_AESD_CHAR_DEVICE
-	#define DATA_PATH "/dev/aesdchar"
+#define DATA_PATH "/dev/aesdchar"
 #else
-	#define DATA_PATH "/var/tmp/aesdsocketdata"
+#define DATA_PATH "/var/tmp/aesdsocketdata"
 #endif
 
 
@@ -71,6 +72,7 @@ typedef struct client_node
 	int connection_fd;
 	bool thread_completion_status;
 	pthread_mutex_t *thread_mutex;
+	char *ioctl_string;
 	SLIST_ENTRY(client_node) next_node;  // Pointer to next elemenet
 } client_node_t;
 
@@ -108,14 +110,14 @@ void cleanup(void)
 	}
 
 	// Do not remove the driver
-	#ifndef USE_AESD_CHAR_DEVICE
+#ifndef USE_AESD_CHAR_DEVICE
 	// Error handling for deleting file
 	if(remove(DATA_PATH) == ERROR)
 	{
 		perror("File removal");
 		syslog(LOG_ERR, " File removal failed");
 	}
-	#endif
+#endif
 
 	syslog(LOG_DEBUG, "Cleanup End");
 	closelog();
@@ -219,9 +221,9 @@ void signal_handler(int signo)
 
 		close(server_fd);
 
-		#ifndef USE_AESD_CHAR_DEVICE
+#ifndef USE_AESD_CHAR_DEVICE
 		pthread_cancel(time_node -> thread_id);
-		#endif
+#endif
 	}
 	syslog(LOG_DEBUG, "Exiting signal handler");
 }
@@ -301,125 +303,164 @@ void  *timestamp_appender(void *thread_node)
 }
 #endif
 
+
 /* Description: This function handles the client connections in a thread
 */
 void *client_handler(void *client_thread)
 {
-	if(client_thread == NULL)
+	if (client_thread == NULL) 
 	{
 		perror("Client thread is NULL");
-		syslog(LOG_ERR, "Client thread si NULL");
+		syslog(LOG_ERR, "Client thread is NULL");
 		return NULL;
 	}
 
 	char buf[MAX_BUFFER_SIZE];
 	int bytes_received = 0;
+	int file_fd;
+	bool newline_status = false;
 
-	client_node_t *node = (client_node_t*) client_thread;
-	node -> thread_completion_status = false;
+	client_node_t *node = (client_node_t *)client_thread;
+	node->thread_completion_status = false;
 
-	memset(buf, '\0', MAX_BUFFER_SIZE); // Clear the buffer
+	node->ioctl_string = "AESDCHAR_IOCSEEKTO:"; // Ioctl setup
+	memset(buf, '\0', MAX_BUFFER_SIZE);           // Clear the buffer
 
-	file_fd = open(DATA_PATH, O_RDWR | O_APPEND | O_CREAT, 0644);
-        if (file_fd == ERROR)
-        {
-                perror("File open");
-                syslog(LOG_ERR, "File Open");
-        }
-	while(1)
+	file_fd = open(DATA_PATH, O_RDWR, 0644);
+	if (file_fd == ERROR) 
 	{
-		bytes_received = recv(node -> connection_fd, buf, MAX_BUFFER_SIZE, 0);
+		perror("File open error");
+		syslog(LOG_ERR, "File Open error");
+	} 
+	else 
+	{
+		syslog(LOG_INFO, "Opened aesdchar driver successfully");
+	}
+
+	while (1) 
+	{
+		bytes_received = recv(node->connection_fd, buf, MAX_BUFFER_SIZE, 0);
+
 
 		if (bytes_received == ERROR) 
 		{
 			perror("recv from handler");
 			syslog(LOG_ERR, "Receiving from client failed");
-			return NULL;
+			goto exit;
 		}
 
 		// Lock the mutex before writing to the file
-		if(pthread_mutex_lock(node -> thread_mutex) != SUCCESS)
+		if (pthread_mutex_lock(node->thread_mutex) != SUCCESS)
 		{
 			perror("Mutex lock failure");
 			syslog(LOG_ERR, "Mutex lock failure");
-			return NULL;
-		}
-
-		if (write(file_fd, buf, bytes_received) == ERROR) 
-		{
-			perror("File write error");
-			syslog(LOG_ERR, "File write error");
-			return NULL;
-		}
-
-		if(pthread_mutex_unlock(node -> thread_mutex) != SUCCESS)
-		{
-			perror("Mutex unlock failure");
-			syslog(LOG_ERR, "Mutex unlock failure");
-			return NULL;
+			goto exit;
 		}
 
 		// Check if packet end has reached
 		if ((memchr(buf, '\n', bytes_received)) != NULL)
-			break;
+			newline_status = true;
+
+		if(newline_status == true)
+		{
+			// Check if the received string starts with "AESDCHAR_IOCSEEKTO:"
+			if (strncmp(buf, node->ioctl_string, strlen(node->ioctl_string)) == 0) 
+			{
+				// Extract X and Y from the string
+				struct aesd_seekto seekto;
+				sscanf(buf, "AESDCHAR_IOCSEEKTO:%d,%d", &seekto.write_cmd, &seekto.write_cmd_offset); 
+
+				if (ioctl(file_fd, AESDCHAR_IOCSEEKTO, &seekto)) 
+				{
+					perror("ioctl write command");
+					syslog(LOG_ERR, "ioctl write command");
+					goto exit;
+				}
+			} 
+			else 
+			{
+				if (write(file_fd, buf, bytes_received) == ERROR) 
+				{
+					perror("File write error");
+					syslog(LOG_ERR, "File write error");
+					goto exit;
+				}
+
+				// Update pos
+				//node->file_pos += bytes_received;
+			}
+
+			if (pthread_mutex_unlock(node->thread_mutex) != SUCCESS)
+			{
+				perror("Mutex unlock failure");
+				syslog(LOG_ERR, "Mutex unlock failure");
+				goto exit;
+			}
+		}
 	}
 
-	close(file_fd);
-	
 	// Read from the file and send it to the client
 	int sent_bytes = 0;
 	memset(buf, '\0', MAX_BUFFER_SIZE); // Clear the buffer
 
-	#ifndef USE_AESD_CHAR_DEVICE
-	if(lseek(file_fd , 0, SEEK_SET) == ERROR)
+#ifndef USE_AESD_CHAR_DEVICE
+	if (lseek(file_fd, 0, SEEK_SET) == ERROR) 
 	{
 		perror("lseek");
 		syslog(LOG_ERR, "lseek failed");
-		return NULL;
+		goto exit;
 	}
-	#endif
+#endif
 
-	// Open fd for read mode
-	file_fd = open(DATA_PATH, O_RDONLY, 0444);
-        if (file_fd == ERROR)
-        {
-                perror("File open");
-                syslog(LOG_ERR, "File Open");
-        }
-
-	while(1)
+//	int temp_pos = node->file_pos;
+	while (1) 
 	{
+		if (pthread_mutex_lock(node->thread_mutex) != SUCCESS)
+		{
+			perror("Mutex lock failure");
+			syslog(LOG_ERR, "Mutex lock failure");
+			goto exit;
+		}
+
 		int bytes_read = read(file_fd, buf, MAX_BUFFER_SIZE);
 
-		if(bytes_read == ERROR)
+		if (pthread_mutex_unlock(node->thread_mutex) != SUCCESS)
+		{
+			perror("Mutex unlock failure");
+			syslog(LOG_ERR, "Mutex unlock failure");
+			goto exit;
+		}
+
+		if (bytes_read == ERROR) 
 		{
 			perror("File read");
 			syslog(LOG_ERR, "Failed to read file");
-			return NULL;
+			goto exit;
 		}
 
-		sent_bytes = send(node -> connection_fd, buf, bytes_read, 0);
+		sent_bytes = send(node->connection_fd, buf, bytes_read, 0);
 
-		if(sent_bytes == ERROR)
+		if (sent_bytes == ERROR) 
 		{
 			perror("Send to client failed");
-			syslog(LOG_ERR, " Send to client failed");
-			return NULL;
+			syslog(LOG_ERR, "Send to client failed");
+			goto exit;
 		}
 
-		// If there are no more bytes to read, exit the while loop
-		if(bytes_read == 0)
-			break;
+		//temp_pos -= sent_bytes;
 
+		// If there are no more bytes to read, exit the while loop
+		if (bytes_read == 0)
+			break;
 	}
 
-	close(node -> connection_fd);
-	node -> thread_completion_status = true;
+	node->thread_completion_status = true;
 
+exit:
+	close(node->connection_fd);
 	close(file_fd);
 	return client_thread;
 }
-
 
 /**********************************Application Entry*********************************/
 int main(int argc, char *argv[])
@@ -445,7 +486,7 @@ int main(int argc, char *argv[])
 	pthread_mutex_t thread_mutex;
 	client_node_t *data_node_ptr = NULL;
 
-	
+
 	if(pthread_mutex_init(&thread_mutex, NULL) != SUCCESS) 
 	{
 		perror("Mutex Initialization");
@@ -534,7 +575,7 @@ int main(int argc, char *argv[])
 
 	syslog(LOG_DEBUG, "Listening for connections");
 
-	#ifndef USE_AESD_CHAR_DEVICE
+#ifndef USE_AESD_CHAR_DEVICE
 	// Malloc for timer thread
 	time_node = (timestamp_t*)malloc(sizeof(timestamp_t));
 
@@ -556,7 +597,7 @@ int main(int argc, char *argv[])
 		time_node = NULL;
 		return ERROR;
 	} 
-	#endif
+#endif
 
 	while(!exit_flag)
 	{
@@ -636,7 +677,7 @@ int main(int argc, char *argv[])
 
 	syslog(LOG_DEBUG, "Finished emptying linked list for client handling threads");
 
-	#ifndef USE_AESD_CHAR_DEVICE
+#ifndef USE_AESD_CHAR_DEVICE
 	pthread_join(time_node -> thread_id, NULL);  // Timer thread
 
 	syslog(LOG_DEBUG, "Joined timer thread");
@@ -644,7 +685,7 @@ int main(int argc, char *argv[])
 	free(time_node);
 	time_node = NULL;
 	pthread_mutex_destroy(&thread_mutex);
-	#endif
+#endif
 
 
 	syslog(LOG_DEBUG, "Before cleanup in main");
