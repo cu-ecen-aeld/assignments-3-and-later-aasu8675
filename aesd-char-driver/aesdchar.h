@@ -29,8 +29,12 @@ struct aesd_dev
      * TODO: Add structure(s) and locks needed to complete assignment requirements
      */
 	struct aesd_circular_buffer buffer;	/* Buffer Entry Point	*/
+	size_t buffer_size;  // Total size of buffer when concatenated
 	struct mutex lock;
 	struct cdev cdev;     /* Char device structure      */
+	char *temp_buffer;  // Buffer to copy temporary unappended entry
+	size_t temp_buffer_size;  // Temporary unappended buffer entry size
+
 };
 
 
